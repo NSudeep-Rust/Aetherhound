@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 data/
 models/*.pt
-models/*.onnx
+# models/*.onnx intentionally NOT ignored — commit the graph alongside .data sidecar
 *.db
 *.db-wal
 *.db-shm
