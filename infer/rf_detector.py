@@ -11,8 +11,9 @@ from dsp.rf_pipeline import bin_hz, peak_in_band
 
 
 class RFAnomalyDetector:
-    def __init__(self, cfg):
+    def __init__(self, cfg, db_path: str):
         self.cfg = cfg
+        self.db_path = db_path
         path = Path(cfg.baseline_path)
         if not path.exists():
             raise FileNotFoundError(
@@ -32,7 +33,7 @@ class RFAnomalyDetector:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.cfg.db_path) as conn:
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rf_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +45,7 @@ class RFAnomalyDetector:
             """)
 
     def _log(self, z: float, freq: float) -> None:
-        with sqlite3.connect(self.cfg.db_path) as conn:
+        with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO rf_events (timestamp, peak_z, peak_freq_hz, current_state) VALUES (?,?,?,?)",
                 (time.time(), float(z), float(freq), self.state),

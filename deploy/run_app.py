@@ -83,12 +83,13 @@ def main() -> int:
     rf_src = None
     rf_det = None
     if rf_cfg.enabled:
-        rf_det = RFAnomalyDetector(rf_cfg)
+        rf_det = RFAnomalyDetector(rf_cfg, cfg.log.db)
         rf_src = open_rf_source(rf_cfg)
 
     audio.start()
+    # open_rf_source() already opened the source; do not open again
     if rf_src:
-        rf_src.open() if not getattr(rf_src, "_open", False) else None
+        pass
 
     frame_dt = 1.0 / max(ui_cfg.refresh_hz, 1)
     buf_len = dsp.nfft + (dsp.patch - 1) * dsp.hop

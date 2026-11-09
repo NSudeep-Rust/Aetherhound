@@ -107,6 +107,9 @@ class SimulatedBackend(RFSource):
         self._n = 0
         self.inject_carrier = False
 
+    def open(self) -> None:
+        self._n = 0
+
     def read_iq(self, n: int) -> np.ndarray:
         noise = (
             np.random.normal(0, 0.5, n) + 1j * np.random.normal(0, 0.5, n)
