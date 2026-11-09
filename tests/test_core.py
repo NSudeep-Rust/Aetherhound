@@ -20,7 +20,7 @@ def setup_dummy_wav():
 
 def test_dsp_spectrogram_dimensions(setup_dummy_wav):
     """Verifies that the Short-Time Fourier Transform compiles into a flawless 2D grid matrix."""
-    matrix = extract_spectrogram(setup_dummy_wav, nfft=512, hop_size=32)
+    matrix = extract_spectrogram(setup_dummy_wav, nfft=512, hop=32)
     assert len(matrix.shape) == 2, "DSP output framework must be a clean 2D array matrix layout."
     assert matrix.shape[1] == 257, "Spectrogram frequency bins mismatch for NFFT=512 parameters."
 

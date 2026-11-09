@@ -1,30 +1,58 @@
-import numpy as np
-import scipy.signal as signal
-import scipy.io.wavfile as wav
+"""Audio DSP: bandpass + mains notches, then STFT spectrogram extraction."""
+from __future__ import annotations
 
-def extract_spectrogram(file_path, nfft=512, hop_size=32):
-    # 1. Load the wav audio file
+import numpy as np
+import scipy.io.wavfile as wav
+import scipy.signal as signal
+
+from config_loader import load_config
+
+
+def build_filter(sample_rate: float, lo_hz: float, hi_hz: float,
+                 notch_base_hz: float, notch_harmonics: int, notch_q: float):
+    nyquist = sample_rate / 2
+    hi = min(hi_hz, nyquist - 50)
+    sos = signal.butter(6, [lo_hz, hi], btype="bandpass", fs=sample_rate, output="sos")
+    for k in range(1, notch_harmonics + 1):
+        f = notch_base_hz * k
+        if f < nyquist - 20:
+            b, a = signal.iirnotch(f, Q=notch_q, fs=sample_rate)
+            sos = np.vstack([sos, signal.tf2sos(b, a)])
+    return sos
+
+
+def apply_filters(audio: np.ndarray, sample_rate: float, band, zero_phase: bool = True) -> np.ndarray:
+    sos = build_filter(sample_rate, band.lo_hz, band.hi_hz,
+                       band.notch_base_hz, band.notch_harmonics, band.notch_q)
+    audio = np.asarray(audio, dtype=np.float64)
+    if audio.size <= 3 * max(len(sos), 1):
+        return signal.sosfilt(sos, audio)
+    return signal.sosfiltfilt(sos, audio) if zero_phase else signal.sosfilt(sos, audio)
+
+
+def spectrogram_from_array(audio: np.ndarray, sample_rate: float,
+                           nfft: int = 512, hop: int = 32) -> np.ndarray:
+    _, _, spec = signal.stft(audio, fs=sample_rate, nperseg=nfft, noverlap=nfft - hop)
+    return np.abs(spec).T
+
+
+def extract_spectrogram(file_path, nfft: int = 512, hop: int = 32,
+                        band=None, apply_filters_flag: bool = True) -> np.ndarray:
     sample_rate, audio_data = wav.read(file_path)
-    
-    # If audio is stereo, convert to mono by taking the first channel
-    if len(audio_data.shape) > 1:
+    if audio_data.ndim > 1:
         audio_data = audio_data[:, 0]
-        
-    # Convert integer PCM data back to float scale (-1.0 to 1.0)
-    audio_float = audio_data.astype(np.float32) / 32767.0
-    
-    # 2. Compute the Short-Time Fourier Transform (STFT)
-    frequencies, times, spec_matrix = signal.stft(
-        audio_float, 
-        fs=sample_rate, 
-        nperseg=nfft, 
-        noverlap=nfft - hop_size
-    )
-    
-    # 3. Convert complex voltage values to absolute power magnitude scale
-    magnitude_spec = np.abs(spec_matrix)
-    
-    return magnitude_spec.T  # Transpose so time frames are rows, frequencies are columns
+
+    if np.issubdtype(audio_data.dtype, np.integer):
+        audio = audio_data.astype(np.float32) / float(np.iinfo(audio_data.dtype).max)
+    else:
+        audio = audio_data.astype(np.float32)
+
+    if apply_filters_flag:
+        band = band or load_config().band
+        audio = apply_filters(audio, sample_rate, band)
+
+    return spectrogram_from_array(audio, sample_rate, nfft, hop)
+
 
 if __name__ == "__main__":
     import os

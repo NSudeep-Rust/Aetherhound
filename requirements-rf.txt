@@ -1,0 +1,2 @@
+pyrtlsdr==0.3.0
+pyhackrf==0.1.1

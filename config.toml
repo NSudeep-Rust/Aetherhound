@@ -1,15 +1,17 @@
 [audio]
-device = 4
+device = -1            # -1 = system default; set an index to pin a device
 rate = 48000
 blocksize = 1024
 channels = 1
 
 [band]
-lo_hz = 300
-hi_hz = 8000
+lo_hz = 20
+hi_hz = 22000
+notch_base_hz = 50
+notch_harmonics = 8
+notch_q = 30.0
 
 [dsp]
-notch_hz = [50, 100, 150, 200]
 nfft = 512
 hop = 32
 patch = 64
@@ -25,6 +27,31 @@ clear_ratio = 0.7
 db = "events.db"
 
 [rf]
-enabled = false
+enabled = true
+backend = "auto"                 # auto | rtlsdr | hackrf | simulated
+device_index = 0
 center_hz = 100000000
-gain = 28
+sample_rate_hz = 2400000
+gain_db = 28
+gain_auto = false
+nfft = 2048
+frames_per_spectrum = 4
+baseline_path = "models/rf_baseline.npz"
+z_threshold = 4.5
+min_bins_over = 3
+peak_search_lo_hz = 300000
+peak_search_hi_hz = 800000
+rf_armed_frames = 3
+rf_clear_frames = 15
+
+[waterfall]
+width = 108
+height = 26
+floor_db = -85
+ceil_db = -25
+
+[ui]
+refresh_hz = 30
+buzzer = true
+buzzer_hz = 2200
+buzzer_cooldown_s = 2.0

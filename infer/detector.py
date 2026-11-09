@@ -4,18 +4,23 @@ import sqlite3
 import numpy as np
 import onnxruntime as ort
 from dsp.pipeline import extract_spectrogram
+from config_loader import load_config
+
 
 class AetherHoundEngine:
     def __init__(self, config_toml_path="config.toml"):
-        # 1. Load ONNX Session and Calibration Threshold parameters
+        # 1. Load config
+        cfg = load_config(config_toml_path)
+        
+        # 2. Load ONNX Session and Calibration Threshold parameters
         self.ort_session = ort.InferenceSession("models/autoencoder.onnx")
-        with open("models/threshold.txt", "r") as f:
+        with open(cfg.detect.threshold_file, "r") as f:
             self.threshold = float(f.read().strip())
             
-        # 2. Hardcoded State Parameters matching config.toml constraints
-        self.db_path = "events.db"
-        self.armed_limit = 2
-        self.clear_limit = 5
+        # 3. State Parameters from config
+        self.db_path = cfg.log.db
+        self.armed_limit = cfg.detect.armed_frames
+        self.clear_limit = cfg.detect.clear_frames
         
         # Initialize internal monitoring metrics tracking
         self.anomaly_counter = 0
