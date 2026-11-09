@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+models/*.pt
+models/*.onnx
+*.db
+*.db-wal
+*.db-shm
+docs/*.pdf
