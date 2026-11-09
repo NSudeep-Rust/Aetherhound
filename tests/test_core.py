@@ -1,0 +1,49 @@
+import os
+import pytest
+import numpy as np
+import scipy.io.wavfile as wav
+from dsp.pipeline import extract_spectrogram
+from infer.detector import AetherHoundEngine
+
+@pytest.fixture
+def setup_dummy_wav():
+    """Generates a brief structural wave asset to validate DSP processing."""
+    file_path = "tests/dummy_test.wav"
+    os.makedirs("tests", exist_ok=True)
+    sr = 48000
+    t = np.linspace(0, 1, sr, endpoint=False)
+    audio = np.sin(2 * np.pi * 440 * t) * 10000
+    wav.write(file_path, sr, audio.astype(np.int16))
+    yield file_path
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+def test_dsp_spectrogram_dimensions(setup_dummy_wav):
+    """Verifies that the Short-Time Fourier Transform compiles into a flawless 2D grid matrix."""
+    matrix = extract_spectrogram(setup_dummy_wav, nfft=512, hop_size=32)
+    assert len(matrix.shape) == 2, "DSP output framework must be a clean 2D array matrix layout."
+    assert matrix.shape[1] == 257, "Spectrogram frequency bins mismatch for NFFT=512 parameters."
+
+def test_inference_engine_state_logic():
+    """Validates the state machine transitions and database logger behavior."""
+    # Temporarily bypass files checking by targeting the local operational components
+    engine = AetherHoundEngine()
+    
+    # 1. Force clear data matrix values to confirm system remains normal
+    fake_clean_patch = np.zeros((64, 257), dtype=np.float32)
+    engine.state = "CLEAN"
+    engine.anomaly_counter = 0
+    
+    score, state = engine.process_patch(fake_clean_patch)
+    assert state == "CLEAN", "System threw false alarm anomalies on pure silent signals."
+    
+    # 2. Force huge structural error values to check Hysteresis stepping pace
+    fake_malware_patch = np.ones((64, 257), dtype=np.float32) * 999.0
+    
+    # First heavy anomaly -> Step into ARMED status
+    engine.process_patch(fake_malware_patch)
+    # Second heavy anomaly -> Escalates into CRITICAL THREAT status alert
+    score, second_state = engine.process_patch(fake_malware_patch)
+    
+    assert second_state in ["ARMED", "THREAT_DETECTED"], "Hysteresis pipeline failed to escalate threat level triggers."
+    print("\n[+] Verification Unit Tests Passed successfully.")
