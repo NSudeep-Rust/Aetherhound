@@ -16,6 +16,9 @@ class RFSource:
     def open(self) -> None:
         raise NotImplementedError
 
+    def set_center(self, hz: float) -> None:
+        self.center_hz = hz
+
     def read_iq(self, n: int) -> np.ndarray:
         raise NotImplementedError
 
@@ -50,6 +53,11 @@ class RTLSDRBackend(RFSource):
         self._sdr.center_freq = self.center_hz
         self._sdr.gain = "auto" if self.gain_auto else self.gain_db
 
+    def set_center(self, hz: float) -> None:
+        self.center_hz = hz
+        if self._sdr is not None:
+            self._sdr.center_freq = hz
+
     def read_iq(self, n: int) -> np.ndarray:
         if self._sdr is None:
             raise RuntimeError("source not open")
@@ -81,6 +89,11 @@ class HackRFBackend(RFSource):
         self._hackrf.gain = int(self.gain_db)
         self._hackrf.start_rx()
 
+    def set_center(self, hz: float) -> None:
+        self.center_hz = hz
+        if self._hackrf is not None:
+            self._hackrf.center_freq = int(hz)
+
     def read_iq(self, n: int) -> np.ndarray:
         if self._hackrf is None:
             raise RuntimeError("source not open")
@@ -103,12 +116,15 @@ class SimulatedBackend(RFSource):
     def __init__(self, center_hz: float, rate: float, carrier_hz: float = 500e3):
         self.center_hz = center_hz
         self.rate = rate
-        self.carrier_hz = carrier_hz
+        self.carrier_abs_hz = center_hz + carrier_hz
         self._n = 0
         self.inject_carrier = False
 
     def open(self) -> None:
         self._n = 0
+
+    def set_center(self, hz: float) -> None:
+        self.center_hz = hz
 
     def read_iq(self, n: int) -> np.ndarray:
         noise = (
@@ -116,8 +132,10 @@ class SimulatedBackend(RFSource):
         ).astype(np.complex64)
 
         if self.inject_carrier:
-            t = (np.arange(n) + self._n) / self.rate
-            noise += (0.35 * np.exp(2j * np.pi * self.carrier_hz * t)).astype(np.complex64)
+            offset = self.carrier_abs_hz - self.center_hz
+            if abs(offset) < self.rate / 2:
+                t = (np.arange(n) + self._n) / self.rate
+                noise += (0.35 * np.exp(2j * np.pi * offset * t)).astype(np.complex64)
 
         self._n += n
         return noise

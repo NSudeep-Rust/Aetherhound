@@ -44,6 +44,19 @@ peak_search_hi_hz = 800000
 rf_armed_frames = 3
 rf_clear_frames = 15
 
+[sweep]
+enabled = true
+band_plan = [[88000000, 108000000], [400000000, 470000000], [863000000, 870000000], [2400000000, 2483500000]]
+step_hz = 2000000
+dwell_ms = 15
+dc_guard_bins = 6
+
+[bearing]
+enabled = false
+positions = [0, 90, 180, 270]
+hold_s = 0.4
+target_bandwidth_hz = 100000
+
 [waterfall]
 width = 108
 height = 26

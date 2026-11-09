@@ -83,6 +83,23 @@ class UICfg:
 
 
 @dataclass
+class SweepCfg:
+    enabled: bool = True
+    band_plan: list = field(default_factory=lambda: [[88e6, 108e6]])
+    step_hz: float = 2e6
+    dwell_ms: float = 15.0
+    dc_guard_bins: int = 6
+
+
+@dataclass
+class BearingCfg:
+    enabled: bool = False
+    positions: list = field(default_factory=lambda: [0, 90, 180, 270])
+    hold_s: float = 0.4
+    target_bandwidth_hz: float = 100e3
+
+
+@dataclass
 class Config:
     audio: AudioCfg = field(default_factory=AudioCfg)
     band: BandCfg = field(default_factory=BandCfg)
@@ -90,6 +107,8 @@ class Config:
     detect: DetectCfg = field(default_factory=DetectCfg)
     log: LogCfg = field(default_factory=LogCfg)
     rf: RFCfg = field(default_factory=RFCfg)
+    sweep: SweepCfg = field(default_factory=SweepCfg)
+    bearing: BearingCfg = field(default_factory=BearingCfg)
     waterfall: WaterfallCfg = field(default_factory=WaterfallCfg)
     ui: UICfg = field(default_factory=UICfg)
 
@@ -108,6 +127,12 @@ class Config:
             raise ValueError("rf window extends below 0 Hz")
         if self.rf.peak_search_lo_hz >= self.rf.peak_search_hi_hz:
             raise ValueError("rf peak search band inverted")
+        if self.sweep.enabled:
+            if self.sweep.step_hz > self.rf.sample_rate_hz:
+                raise ValueError("sweep.step_hz must be <= rf.sample_rate_hz")
+            for lo, hi in self.sweep.band_plan:
+                if lo >= hi:
+                    raise ValueError(f"sweep band inverted: {lo}-{hi}")
 
 
 def _fill(obj, data: dict) -> None:
@@ -124,7 +149,7 @@ def load_config(path: str | Path | None = None) -> Config:
             raw = tomllib.load(fh)
 
     cfg = Config()
-    for section in ("audio", "band", "dsp", "detect", "log", "rf", "waterfall", "ui"):
+    for section in ("audio", "band", "dsp", "detect", "log", "rf", "sweep", "bearing", "waterfall", "ui"):
         if section in raw and isinstance(raw[section], dict):
             _fill(getattr(cfg, section), raw[section])
     cfg.validate()

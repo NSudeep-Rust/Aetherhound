@@ -1,4 +1,4 @@
-"""Truecolour terminal waterfall. Newest row at the bottom."""
+"""Truecolour wideband waterfall. Invalid (DC-guard) bins render dim."""
 from __future__ import annotations
 
 from collections import deque
@@ -13,11 +13,7 @@ RAMP = [
     "#781d80", "#8c2c7c", "#a13d75", "#b44f6b", "#c56361", "#d47a58",
     "#df9350", "#e7ad4a", "#ecc947", "#f0e64e", "#f8f76a", "#fdff9a",
 ]
-
-
-def _level(rgb_hex: str, ch: int) -> tuple[int, int, int]:
-    h = rgb_hex.lstrip("#")
-    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+GAP = "on #23272f"
 
 
 class Waterfall:
@@ -29,28 +25,39 @@ class Waterfall:
         self._rows: deque[np.ndarray] = deque(maxlen=cfg.height)
         self._lut = [f"on {c}" for c in RAMP]
 
-    def push(self, spectrum_db: np.ndarray) -> None:
-        col = decimate_max(np.asarray(spectrum_db, dtype=np.float64), self.width)
+    def _style(self, level: int) -> str:
+        return GAP if level < 0 else self._lut[level]
+
+    def push(self, frame) -> None:
         span = max(self.ceil - self.floor, 1e-9)
+        col = np.full(self.width, -200.0)
+        ok = np.zeros(self.width, dtype=bool)
+
+        db = decimate_max(np.asarray(frame.db, dtype=np.float64), self.width)
+        v = decimate_max(frame.valid.astype(np.float64), self.width) > 0.5
+        col[v] = db[v]
+        ok[v] = True
+
         norm = np.clip((col - self.floor) / span, 0.0, 1.0)
         idx = (norm * (len(self._lut) - 1)).round().astype(np.int8)
+        idx[~ok] = -1
         self._rows.append(idx)
 
-    def render(self, peak_col: int | None = None) -> Text:
+    def render(self, peak_col: int | None = None, labels: list | None = None) -> Text:
         text = Text(no_wrap=True, overflow="crop")
-        blank = " " * self.width
-
         for _ in range(self.height - len(self._rows)):
-            text.append(blank + "\n")
+            text.append(" " * self.width + "\n")
 
         for row in self._rows:
-            run_start = 0
+            start = 0
             for i in range(1, self.width + 1):
-                if i == self.width or row[i] != row[run_start]:
-                    text.append(" " * (i - run_start), style=self._lut[int(row[run_start])])
-                    run_start = i
+                if i == self.width or row[i] != row[start]:
+                    text.append(" " * (i - start), style=self._style(int(row[start])))
+                    start = i
             text.append("\n")
 
         if peak_col is not None and 0 <= peak_col < self.width:
             text.append(" " * peak_col + "^", style="bold white")
+        if labels:
+            text.append("\n" + " | ".join(labels), style="dim")
         return text

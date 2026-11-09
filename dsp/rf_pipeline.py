@@ -25,7 +25,7 @@ def power_spectrum_db(iq: np.ndarray, nfft: int, sample_rate: float, window: str
     # For complex FFT, we get nfft bins (not nfft//2+1)
     # Shift so DC is in center, then take positive frequencies
     acc = np.fft.fftshift(acc)
-    acc = acc[nfft//2:]  # positive frequencies only
+    # Full complex spectrum after fftshift: covers [center - rate/2, center + rate/2)
     acc = np.maximum(acc, 1e-20)
     return 10.0 * np.log10(acc)
 
