@@ -83,10 +83,10 @@ python deploy/run_app.py
 | Metric | Value |
 |--------|-------|
 | Training Loss (final) | 0.009942 |
-| Threshold (99.5th pct) | 0.010697 |
+| Threshold (99.5th pct) | 0.024815 |
 | Attack Detection Rate | 133/468 patches (28.4%) |
 | ONNX Parity (max diff) | 0.000000 |
-| Test Suite | 4/4 passed (2 core + 2 RF) |
+| Test Suite | 16 passed (4 suites: core, RF, sweep, bearing) |
 
 ## Configuration
 
@@ -109,16 +109,21 @@ first. Calibrate a baseline once with `capture/record_rf.py`, then
 `infer/rf_detector.py` scores each spectrum as a per-bin z-score against it
 and logs the peak frequency.
 
-Limits, stated plainly: the waterfall covers one 2.4 MHz window, not wideband
-sweep. Detection is single-antenna, so it identifies the *frequency* of a
-transmission but not its *direction*. Rack-level localisation needs a second
-receiver.
+Limits, stated plainly:
+- The waterfall covers one 2.4 MHz window, not wideband sweep.
+- Detection is single-antenna, so it identifies the *frequency* of a
+  transmission but not its *direction*. Rack-level localisation needs a second
+  receiver.
+- Bearing estimation uses a switched directional antenna (RSSI peak), not TDOA.
+  Multipath will bias it; treat the result as a **sector, not a bearing**.
+- Sweep window: the bearing layer steps through fixed antenna positions with a
+  configurable hold time (`cfg.hold_s`); the full sweep takes `n_positions *
+  hold_s` seconds. During this window the target must remain on-frequency.
 
 ## Files
 
-- `models/autoencoder.pt` - PyTorch model weights
-- `models/autoencoder.onnx` - ONNX export for inference
-- `models/threshold.txt` - Anomaly threshold (0.010697)
+- `models/autoencoder.onnx` - ONNX export for inference (self-contained)
+- `models/threshold.txt` - Anomaly threshold (0.024815)
 - `models/rf_baseline.npz` - RF per-bin mean/std baseline
 - `events.db` - SQLite event log (audio + RF tables)
 - `deploy/verified_receipt.txt` - Deployment verification

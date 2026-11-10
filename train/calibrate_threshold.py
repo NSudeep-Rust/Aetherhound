@@ -1,4 +1,9 @@
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -13,15 +18,20 @@ def calibrate_and_validate():
     
     # 2. Load clean baseline patches
     baseline_data = np.load("data/baseline_patches.npy")
-    max_val = baseline_data.max() if baseline_data.max() > 0 else 1.0
-    norm_baseline = torch.tensor(baseline_data / max_val, dtype=torch.float32)
     
     # 3. Compute baseline errors to establish the threshold
+    #    Normalize per-patch (same as engine: patch_matrix / patch_matrix.max())
+    baseline_errors = []
     with torch.no_grad():
-        reconstructed_baseline = model(norm_baseline)
-        # Flatten time and frequency to get an error score for each individual patch
-        baseline_errors = criterion(reconstructed_baseline, norm_baseline).mean(dim=(1, 2)).numpy()
-        
+        for i in range(baseline_data.shape[0]):
+            patch = baseline_data[i]
+            pmax = patch.max() if patch.max() > 0 else 1.0
+            norm_patch = torch.tensor(patch / pmax, dtype=torch.float32).unsqueeze(0)
+            reconstructed = model(norm_patch)
+            err = criterion(reconstructed, norm_patch).mean().item()
+            baseline_errors.append(err)
+    baseline_errors = np.array(baseline_errors)
+    
     # Set the anomaly threshold at the 99.5th percentile of normal room sound
     threshold = np.percentile(baseline_errors, 99.5)
     
@@ -32,11 +42,17 @@ def calibrate_and_validate():
     
     # 4. Load and validate infected malware patches
     attack_data = np.load("data/test_patches.npy")
-    norm_attack = torch.tensor(attack_data / max_val, dtype=torch.float32)
     
+    attack_errors = []
     with torch.no_grad():
-        reconstructed_attack = model(norm_attack)
-        attack_errors = criterion(reconstructed_attack, norm_attack).mean(dim=(1, 2)).numpy()
+        for i in range(attack_data.shape[0]):
+            patch = attack_data[i]
+            pmax = patch.max() if patch.max() > 0 else 1.0
+            norm_patch = torch.tensor(patch / pmax, dtype=torch.float32).unsqueeze(0)
+            reconstructed = model(norm_patch)
+            err = criterion(reconstructed, norm_patch).mean().item()
+            attack_errors.append(err)
+    attack_errors = np.array(attack_errors)
         
     # Count how many infected blocks successfully breached our guardrail
     anomalies_detected = np.sum(attack_errors > threshold)
