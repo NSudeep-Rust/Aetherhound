@@ -10,17 +10,19 @@ AetherHound/
 │   ├── record_audio.py      # Legacy audio capture
 │   ├── live_audio.py        # Live microphone callback queue
 │   ├── rf_source.py         # RF backend abstraction (RTL-SDR, HackRF, simulated)
-│   └── record_rf.py         # RF baseline calibration
+│   ├── record_rf.py         # RF baseline calibration
+│   ├── sweep.py             # Wideband sweep step builder + engine
+│   └── bearing.py           # RSSI-peak direction finding
 ├── dsp/               # Signal processing pipeline
-│   ├── pipeline.py          # Audio: bandpass + notches + STFT
+│   ├── pipeline.py          # Audio: bandpass + notches + STFT (cached SOS)
 │   ├── patch_generator.py   # 64-frame patch slicing
 │   └── rf_pipeline.py       # RF: IQ -> dB spectrum, decimation, peak search
 ├── train/             # Model training & calibration
 │   ├── model.py             # AudioAutoencoder architecture
-│   ├── run_training.py      # Training loop (15 epochs)
+│   ├── run_training.py      # Training loop (15 epochs, per-patch norm)
 │   └── calibrate_threshold.py  # 99.5th percentile threshold
 ├── export/            # ONNX export
-│   └── export_onnx.py
+│   └── export_onnx.py       # Self-contained ONNX (external_data=False)
 ├── infer/             # Live detection engines
 │   ├── detector.py          # Audio: ONNX runtime + hysteresis + SQLite
 │   └── rf_detector.py       # RF: z-score baseline + peak freq + SQLite
@@ -32,14 +34,16 @@ AetherHound/
 │   └── run_app.py           # Live mic + RF, 30 FPS, waterfall, buzzer
 ├── tests/             # Pytest validation
 │   ├── test_core.py         # Audio DSP + state machine
-│   └── test_rf.py           # RF spectrum + waterfall
+│   ├── test_rf.py           # RF spectrum + waterfall
+│   ├── test_sweep.py        # Sweep step builder tests
+│   └── test_bearing.py      # Bearing estimation tests
 ├── mock/              # Synthetic data generator
-│   └── generate_signals.py
+│   └── generate_signals.py  # Seeded RNG (deterministic)
 ├── config.toml        # All hyperparameters (now actually parsed)
 ├── config_loader.py   # Typed config loader
 ├── requirements.txt   # Python dependencies
 ├── requirements-rf.txt  # SDR dependencies (pyrtlsdr, pyhackrf)
-└── models/            # Trained artifacts (gitignored)
+└── models/            # Trained artifacts (tracked via Git LFS)
     ├── autoencoder.pt
     ├── autoencoder.onnx
     ├── threshold.txt
@@ -82,9 +86,9 @@ python deploy/run_app.py
 
 | Metric | Value |
 |--------|-------|
-| Training Loss (final) | 0.009942 |
-| Threshold (99.5th pct) | 0.024815 |
-| Attack Detection Rate | 133/468 patches (28.4%) |
+| Training Loss (final) | 0.016482 |
+| Threshold (99.5th pct) | 0.024516 |
+| Attack Detection Rate | 2/468 patches (0.4%) |
 | ONNX Parity (max diff) | 0.000000 |
 | Test Suite | 16 passed (4 suites: core, RF, sweep, bearing) |
 
@@ -122,11 +126,20 @@ Limits, stated plainly:
 
 ## Files
 
-- `models/autoencoder.onnx` - ONNX export for inference (self-contained)
-- `models/threshold.txt` - Anomaly threshold (0.024815)
-- `models/rf_baseline.npz` - RF per-bin mean/std baseline
+- `models/autoencoder.onnx` - ONNX export for inference (self-contained, no `.data` sidecar)
+- `models/threshold.txt` - Anomaly threshold (0.024516)
+- `models/rf_baseline.npz` - RF per-bin mean/std baseline (committed via Git LFS)
 - `events.db` - SQLite event log (audio + RF tables)
 - `deploy/verified_receipt.txt` - Deployment verification
+
+## Dashboard Screenshots
+
+| State | Screenshot |
+|-------|------------|
+| CLEAN | ![CLEAN dashboard](docs/dashboard_clean.png) |
+| ARMED | ![ARMED dashboard](docs/dashboard_armed.png) |
+| THREAT_DETECTED | ![THREAT_DETECTED dashboard](docs/dashboard_threat_detected.png) |
+| FINAL | ![FINAL dashboard](docs/dashboard_final.png) |
 
 ## License
 

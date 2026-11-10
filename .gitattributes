@@ -1,3 +1,4 @@
 models/autoencoder.onnx.data filter=lfs diff=lfs merge=lfs -text
 models/*.pt filter=lfs diff=lfs merge=lfs -text
 models/*.onnx filter=lfs diff=lfs merge=lfs -text
+models/*.npz filter=lfs diff=lfs merge=lfs -text

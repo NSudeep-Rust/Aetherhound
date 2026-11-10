@@ -47,9 +47,12 @@ def build_steps(band_plan, sample_rate: float) -> list[float]:
             centers.append((lo + hi) / 2)
             continue
         c = lo + half
-        while c <= hi - half + 1:
+        while c < hi - half:
             centers.append(c)
             c += sample_rate
+        # Always cover the top edge of the band
+        if not centers or centers[-1] < hi - half:
+            centers.append(hi - half)
     return centers
 
 

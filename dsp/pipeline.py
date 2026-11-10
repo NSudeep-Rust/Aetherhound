@@ -7,9 +7,14 @@ import scipy.signal as signal
 
 from config_loader import load_config
 
+_FILTER_CACHE: dict[tuple, np.ndarray] = {}
+
 
 def build_filter(sample_rate: float, lo_hz: float, hi_hz: float,
                  notch_base_hz: float, notch_harmonics: int, notch_q: float):
+    key = (sample_rate, lo_hz, hi_hz, notch_base_hz, notch_harmonics, notch_q)
+    if key in _FILTER_CACHE:
+        return _FILTER_CACHE[key]
     nyquist = sample_rate / 2
     hi = min(hi_hz, nyquist - 50)
     sos = signal.butter(6, [lo_hz, hi], btype="bandpass", fs=sample_rate, output="sos")
@@ -18,6 +23,7 @@ def build_filter(sample_rate: float, lo_hz: float, hi_hz: float,
         if f < nyquist - 20:
             b, a = signal.iirnotch(f, Q=notch_q, fs=sample_rate)
             sos = np.vstack([sos, signal.tf2sos(b, a)])
+    _FILTER_CACHE[key] = sos
     return sos
 
 

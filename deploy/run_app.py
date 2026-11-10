@@ -58,14 +58,30 @@ def main() -> int:
     wf = Waterfall(cfg.waterfall)
     buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s) if cfg.ui.buzzer else None
 
-    src = open_rf_source(cfg.rf)
-    src_lock = __import__("threading").Lock()
-    det = RFAnomalyDetector(cfg.rf, cfg.log.db)
-    sweep_engine = SweepEngine(src, cfg.sweep, cfg.rf, src_lock)
-    worker = SweepWorker(sweep_engine, det)
-    worker.start()
+    rf_enabled = bool(getattr(cfg.rf, "enabled", True))
+    baseline_path = Path(getattr(cfg.rf, "baseline_path", "models/rf_baseline.npz"))
 
-    bearing_est = BearingEstimator(src, cfg.bearing, cfg.rf, src_lock) if cfg.bearing.enabled else None
+    if rf_enabled and baseline_path.exists():
+        src = open_rf_source(cfg.rf)
+        src_lock = __import__("threading").Lock()
+        det = RFAnomalyDetector(cfg.rf, cfg.log.db)
+        sweep_engine = SweepEngine(src, cfg.sweep, cfg.rf, src_lock)
+        worker = SweepWorker(sweep_engine, det)
+        worker.start()
+    else:
+        if rf_enabled:
+            print(f"[!] No RF baseline at {baseline_path}; running audio-only mode")
+        else:
+            print("[!] RF layer disabled in config; running audio-only mode")
+        src = None
+        src_lock = None
+        det = None
+        sweep_engine = None
+        worker = None
+
+    bearing_est = None
+    if rf_enabled and src is not None and cfg.bearing.enabled:
+        bearing_est = BearingEstimator(src, cfg.bearing, cfg.rf, src_lock)
 
     audio = LiveAudioSource(cfg.audio)
     audio.start()
@@ -92,7 +108,10 @@ def main() -> int:
                     if patch.shape[0] >= dsp.patch:
                         a_score, audio_state = engine.process_patch(patch[:dsp.patch])
 
-                frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
+                if worker is not None:
+                    frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
+                else:
+                    frame, z, peak_hz, rf_state, sweeps = None, 0.0, 0.0, "DISABLED", 0
                 threat = rf_state == "THREAT_DETECTED" or audio_state == "THREAT_DETECTED"
 
                 layout = build_layout(bearing_est is not None)
@@ -134,7 +153,7 @@ def main() -> int:
                     layout["bearing"].update(Panel(bt, title="Bearing (RSSI)", border_style="magenta"))
 
                 layout["footer"].update(Panel(Text(
-                    f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers)} steps"
+                    f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
                     f"  |  {len(cfg.sweep.band_plan)} bands"
                 )))
                 live.update(layout)
@@ -148,9 +167,11 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        worker.stop()
+        if worker is not None:
+            worker.stop()
         audio.stop()
-        src.close()
+        if src is not None:
+            src.close()
         if buzzer:
             buzzer.stop()
 

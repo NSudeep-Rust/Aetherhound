@@ -15,9 +15,12 @@ def train_model(data_path, model_save_path, epochs=15, batch_size=32):
     # 1. Load the binary array patches generated in Phase 4
     raw_data = np.load(data_path)
     
-    # Normalize data between 0 and 1 for optimal Sigmoid reconstruction activation
-    max_val = raw_data.max() if raw_data.max() > 0 else 1.0
-    normalized_data = raw_data / max_val
+    # Normalize per-patch (same as engine: patch_matrix / patch_matrix.max())
+    # This matches infer/detector.py so training and inference use identical scaling.
+    normalized_data = np.empty_like(raw_data, dtype=np.float32)
+    for i in range(raw_data.shape[0]):
+        pmax = raw_data[i].max() if raw_data[i].max() > 0 else 1.0
+        normalized_data[i] = raw_data[i] / pmax
     
     # Convert numpy matrix tensors to PyTorch floating point Tensors
     tensor_x = torch.tensor(normalized_data, dtype=torch.float32)

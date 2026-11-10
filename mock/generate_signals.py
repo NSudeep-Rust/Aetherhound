@@ -2,11 +2,13 @@ import os
 import numpy as np
 import scipy.io.wavfile as wav
 
+_RNG = np.random.default_rng(42)
+
 def generate_synthetic_data(duration_sec=10, sample_rate=48000, infected=False):
     t = np.linspace(0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
     
     # 1. Simulate Baseline Server Room Noise (White Noise + 50Hz/60Hz Main Hum)
-    white_noise = np.random.normal(0, 0.005, size=t.shape)
+    white_noise = _RNG.normal(0, 0.005, size=t.shape)
     electrical_hum = 0.002 * np.sin(2 * np.pi * 50 * t) + 0.001 * np.sin(2 * np.pi * 100 * t)
     
     signal = white_noise + electrical_hum

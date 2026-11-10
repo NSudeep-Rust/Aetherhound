@@ -46,8 +46,9 @@ class BearingEstimator:
             for i, pin in enumerate(self.pins):
                 pin.value = i == index
         else:
-            print(f"[?] switch antenna {index} ({self.cfg.positions[index]} deg) then Enter", end=" ")
-            input()
+            # Non-blocking: skip manual antenna switch when running under Rich Live
+            # (input() would block the UI thread). Operator must switch physically.
+            pass
 
     def _rssi_at(self, target_hz: float) -> float:
         bw = self.cfg.target_bandwidth_hz
