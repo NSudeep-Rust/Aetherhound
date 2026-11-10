@@ -19,14 +19,21 @@ def calibrate_and_validate():
     # 2. Load clean baseline patches
     baseline_data = np.load("data/baseline_patches.npy")
     
-    # 3. Compute baseline errors to establish the threshold
-    #    Normalize per-patch (same as engine: patch_matrix / patch_matrix.max())
+    # 3. Compute per-patch maxima for fixed-reference normalization
+    #    ref_scale = mean of baseline patch maxima (used by engine at inference)
+    patch_maxima = []
+    for i in range(baseline_data.shape[0]):
+        patch = baseline_data[i]
+        pmax = patch.max() if patch.max() > 0 else 1.0
+        patch_maxima.append(pmax)
+    ref_scale = float(np.mean(patch_maxima))
+    
+    # 4. Compute baseline errors using fixed-reference normalization
     baseline_errors = []
     with torch.no_grad():
         for i in range(baseline_data.shape[0]):
             patch = baseline_data[i]
-            pmax = patch.max() if patch.max() > 0 else 1.0
-            norm_patch = torch.tensor(patch / pmax, dtype=torch.float32).unsqueeze(0)
+            norm_patch = torch.tensor(patch / ref_scale, dtype=torch.float32).unsqueeze(0)
             reconstructed = model(norm_patch)
             err = criterion(reconstructed, norm_patch).mean().item()
             baseline_errors.append(err)
@@ -38,17 +45,19 @@ def calibrate_and_validate():
     os.makedirs("models", exist_ok=True)
     with open("models/threshold.txt", "w") as f:
         f.write(f"{threshold:.6f}")
+    with open("models/ref_scale.txt", "w") as f:
+        f.write(f"{ref_scale:.10f}")
     print(f"[+] Baseline calibration complete. 99.5th Percentile Threshold set at: {threshold:.6f}")
+    print(f"[+] Fixed reference scale (ref_scale) saved: {ref_scale:.10f}")
     
-    # 4. Load and validate infected malware patches
+    # 5. Load and validate infected malware patches
     attack_data = np.load("data/test_patches.npy")
     
     attack_errors = []
     with torch.no_grad():
         for i in range(attack_data.shape[0]):
             patch = attack_data[i]
-            pmax = patch.max() if patch.max() > 0 else 1.0
-            norm_patch = torch.tensor(patch / pmax, dtype=torch.float32).unsqueeze(0)
+            norm_patch = torch.tensor(patch / ref_scale, dtype=torch.float32).unsqueeze(0)
             reconstructed = model(norm_patch)
             err = criterion(reconstructed, norm_patch).mean().item()
             attack_errors.append(err)

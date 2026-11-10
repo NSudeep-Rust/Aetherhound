@@ -1,6 +1,7 @@
 import os
 import time
 import sqlite3
+from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from dsp.pipeline import extract_spectrogram
@@ -17,18 +18,27 @@ class AetherHoundEngine:
         with open(cfg.detect.threshold_file, "r") as f:
             self.threshold = float(f.read().strip())
             
+        # Load fixed reference scale for normalization
+        ref_scale_path = Path("models/ref_scale.txt")
+        if ref_scale_path.exists():
+            with open(ref_scale_path, "r") as f:
+                self.ref_scale = float(f.read().strip())
+        else:
+            self.ref_scale = 1.0
+        
         # 3. State Parameters from config
         self.db_path = cfg.log.db
         self.armed_limit = cfg.detect.armed_frames
         self.clear_limit = cfg.detect.clear_frames
+        self.silence_rms = float(getattr(cfg.detect, "silence_rms", 1e-6))
         
         # Initialize internal monitoring metrics tracking
         self.anomaly_counter = 0
         self.clean_counter = 0
-        self.state = "CLEAN"  # Options: CLEAN, ARMED, THREAT_DETECTED
+        self.state = "CLEAN"  # Options: CLEAN, ARMED, THREAT_DETECTED, NO_SIGNAL
         
         self._init_database()
-        print(f"[+] Engine Initialized. Operational Baseline Guardrail Threshold: {self.threshold:.6f}")
+        print(f"[+] Engine Initialized. Threshold: {self.threshold:.6f} | Ref scale: {self.ref_scale:.6f}")
 
     def _init_database(self):
         conn = sqlite3.connect(self.db_path)
@@ -56,9 +66,20 @@ class AetherHoundEngine:
         conn.close()
 
     def process_patch(self, patch_matrix):
-        # Normalize input dimensions to feed structural ONNX requirements
-        max_val = patch_matrix.max() if patch_matrix.max() > 0 else 1.0
-        norm_patch = (patch_matrix / max_val).astype(np.float32)
+        # Silence gate: a dead mic is not an anomaly
+        rms = float(np.sqrt(np.mean(patch_matrix ** 2)))
+        if rms < self.silence_rms:
+            self.anomaly_counter = 0
+            self.clean_counter = 0
+            old_state = self.state
+            self.state = "NO_SIGNAL"
+            if old_state != self.state:
+                self.log_event(0.0, self.state, f"State change to {self.state}: mic silence (rms={rms:.2e})")
+                print(f"[!] SYSTEM ALARM STATE ALERT: {old_state} -> {self.state} | Score: 0.000000")
+            return 0.0, self.state
+
+        # Normalize using fixed reference scale (same as training)
+        norm_patch = (patch_matrix / self.ref_scale).astype(np.float32)
         input_tensor = np.expand_dims(norm_patch, axis=0) # Add batch dimension
         
         # 1. Run low-overhead math evaluation via ONNX Runtime
@@ -72,6 +93,13 @@ class AetherHoundEngine:
         
         # 3. Process Hysteresis State Transitions Machine
         old_state = self.state
+        
+        # If we were in NO_SIGNAL and now have signal, reset to CLEAN
+        if old_state == "NO_SIGNAL":
+            self.state = "CLEAN"
+            self.anomaly_counter = 0
+            self.clean_counter = 0
+        
         if is_anomalous:
             self.clean_counter = 0
             self.anomaly_counter += 1

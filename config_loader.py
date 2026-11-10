@@ -39,6 +39,7 @@ class DetectCfg:
     clear_frames: int = 5
     hold_s: float = 1.5
     clear_ratio: float = 0.7
+    silence_rms: float = 1e-6
 
 
 @dataclass
@@ -58,12 +59,13 @@ class RFCfg:
     nfft: int = 2048
     frames_per_spectrum: int = 4
     baseline_path: str = "models/rf_baseline.npz"
-    z_threshold: float = 4.5
+    z_threshold: float = 6.0
     min_bins_over: int = 3
     peak_search_lo_hz: float = 300e3
     peak_search_hi_hz: float = 800e3
     rf_armed_frames: int = 3
     rf_clear_frames: int = 15
+    band_plan: list = field(default_factory=lambda: [[400e6, 470e6]])
 
 
 @dataclass
@@ -85,10 +87,10 @@ class UICfg:
 @dataclass
 class SweepCfg:
     enabled: bool = True
-    band_plan: list = field(default_factory=lambda: [[88e6, 108e6]])
+    band_plan: list = field(default_factory=lambda: [[400e6, 470e6]])
     step_hz: float = 2e6
     dwell_ms: float = 15.0
-    dc_guard_bins: int = 6
+    dc_guard_bins: int = 42
 
 
 @dataclass

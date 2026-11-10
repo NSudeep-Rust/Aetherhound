@@ -48,14 +48,100 @@ def build_layout(bearing: bool) -> Layout:
     return root
 
 
+class AudioWaterfall:
+    """Scrolling audio spectrogram for the acoustic panel."""
+    def __init__(self, width: int = 108, height: int = 20, sample_rate: int = 48000, nfft: int = 512):
+        self.width = width
+        self.height = height
+        self.sample_rate = sample_rate
+        self.nfft = nfft
+        self._rows = []
+        # Frequency range: 200 Hz to 8 kHz (skip mains hum)
+        self.freq_lo = 200
+        self.freq_hi = 8000
+        # Color ramp
+        self.RAMP = [
+            "#000004", "#0d0824", "#1f0c48", "#330a67", "#4a0c7a", "#611080",
+            "#781d80", "#8c2c7c", "#a13d75", "#b44f6b", "#c56361", "#d47a58",
+            "#df9350", "#e7ad4a", "#ecc947", "#f0e64e", "#f8f76a", "#fdff9a",
+        ]
+        self._lut = [f"on {c}" for c in self.RAMP]
+        self._adaptive_floor = -100.0
+        self._adaptive_ceil = -20.0
+        self._adapt_alpha = 0.1
+    
+    def push(self, patch: np.ndarray) -> None:
+        """Push a patch (time x freq) and extract a column for the waterfall."""
+        if patch.size == 0:
+            return
+        # patch shape: (time_frames, freq_bins)
+        # Take the mean across time frames for this patch to get one column
+        col_spec = patch.mean(axis=0)  # (freq_bins,)
+        
+        # Convert to dB
+        col_db = 10 * np.log10(np.maximum(col_spec, 1e-20))
+        
+        # Frequency axis
+        freqs = np.linspace(0, self.sample_rate / 2, col_db.size)
+        
+        # Select frequency range of interest
+        mask = (freqs >= self.freq_lo) & (freqs <= self.freq_hi)
+        if not mask.any():
+            return
+        col_db = col_db[mask]
+        freqs = freqs[mask]
+        
+        # Decimate to width
+        from dsp.rf_pipeline import decimate_max
+        col_db = decimate_max(col_db, self.width)
+        
+        # Adaptive range
+        p5 = np.percentile(col_db, 5)
+        p99 = np.percentile(col_db, 99)
+        self._adaptive_floor = (1 - self._adapt_alpha) * self._adaptive_floor + self._adapt_alpha * p5
+        self._adaptive_ceil = (1 - self._adapt_alpha) * self._adaptive_ceil + self._adapt_alpha * p99
+        if self._adaptive_ceil - self._adaptive_floor < 10:
+            mid = (self._adaptive_ceil + self._adaptive_floor) / 2
+            self._adaptive_floor = mid - 5
+            self._adaptive_ceil = mid + 5
+        
+        span = max(self._adaptive_ceil - self._adaptive_floor, 1e-9)
+        norm = np.clip((col_db - self._adaptive_floor) / span, 0.0, 1.0)
+        idx = (norm * (len(self._lut) - 1)).round().astype(np.int8)
+        
+        self._rows.append(idx)
+        if len(self._rows) > self.height:
+            self._rows.pop(0)
+    
+    def render(self) -> Text:
+        text = Text(no_wrap=True, overflow="crop")
+        for _ in range(self.height - len(self._rows)):
+            text.append(" " * self.width + "\n")
+        
+        for row in self._rows:
+            start = 0
+            for i in range(1, self.width + 1):
+                if i == self.width or row[i] != row[start]:
+                    text.append(" " * (i - start), style=self._lut[int(row[start])])
+                    start = i
+            text.append("\n")
+        
+        # Frequency labels
+        text.append(" " * int(self.width * 0.1) + "200Hz" + " " * int(self.width * 0.3) + "4kHz" + " " * int(self.width * 0.3) + "8kHz", style="dim")
+        return text
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
+    ap.add_argument("--inject", action="store_true", help="Inject test carrier in simulated RF backend")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     engine = AetherHoundEngine(args.config)
     wf = Waterfall(cfg.waterfall)
+    # Audio waterfall for the acoustic panel
+    audio_wf = AudioWaterfall(width=cfg.waterfall.width, height=20, sample_rate=cfg.audio.rate, nfft=cfg.dsp.nfft)
     buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s) if cfg.ui.buzzer else None
 
     rf_enabled = bool(getattr(cfg.rf, "enabled", True))
@@ -63,6 +149,10 @@ def main() -> int:
 
     if rf_enabled and baseline_path.exists():
         src = open_rf_source(cfg.rf)
+        # Enable carrier injection for simulated backend if requested
+        if args.inject and hasattr(src, 'inject_carrier'):
+            src.inject_carrier = True
+            print("[+] Carrier injection enabled for simulated backend")
         src_lock = __import__("threading").Lock()
         det = RFAnomalyDetector(cfg.rf, cfg.log.db)
         sweep_engine = SweepEngine(src, cfg.sweep, cfg.rf, src_lock)
@@ -107,6 +197,8 @@ def main() -> int:
                     patch = spectrogram_from_array(filt, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
                         a_score, audio_state = engine.process_patch(patch[:dsp.patch])
+                        # Push to audio waterfall for visualization
+                        audio_wf.push(patch[:dsp.patch])
 
                 if worker is not None:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
@@ -119,13 +211,25 @@ def main() -> int:
                 style = "bold white on red" if threat else "bold black on green"
                 layout["header"].update(Panel(Text(label, justify="center", style=style)))
 
+                # Acoustic panel: show audio waterfall + state info
                 at = Table(expand=True, show_header=False)
                 at.add_column(style="cyan")
                 at.add_column(style="magenta")
                 at.add_row("state", audio_state)
                 at.add_row("score", f"{a_score:.6f}")
                 at.add_row("threshold", f"{engine.threshold:.6f}")
-                layout["audio"].update(Panel(at, title="Acoustic", border_style="cyan"))
+                # Add RMS for debugging
+                if 'patch' in locals() and patch.size > 0:
+                    rms = float(np.sqrt(np.mean(patch ** 2)))
+                    at.add_row("rms", f"{rms:.2e}")
+                # Combine table and waterfall
+                audio_content = Text()
+                audio_content.append_text(Text.from_ansi(str(at)))
+                audio_content.append("\n")
+                audio_content.append_text(audio_wf.render())
+                # Border color follows audio state
+                audio_border = "red" if audio_state == "THREAT_DETECTED" else ("yellow" if audio_state == "ARMED" else ("dim" if audio_state == "NO_SIGNAL" else "cyan"))
+                layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
 
                 rf_text = Text()
                 if frame is not None:
@@ -134,14 +238,16 @@ def main() -> int:
                     wf.push(frame)
                     rf_text.append(
                         f"{peak_hz/1e6:.4f} MHz  z={z:.2f}  sweep #{sweeps}  {rf_state}\n",
-                        style="bold white on red" if threat else "bold white",
+                        style="bold white on red" if rf_state == "THREAT_DETECTED" else "bold white",
                     )
                     rf_text.append_text(wf.render(col, frame.band_names))
                 else:
                     rf_text.append("first sweep…", style="dim")
+                # RF panel border follows RF state, not combined threat
+                rf_border = "red" if rf_state == "THREAT_DETECTED" else ("yellow" if rf_state == "ARMED" else "blue")
                 layout["rf"].update(
                     Panel(rf_text, title="Wideband waterfall",
-                          border_style="red" if threat else "blue")
+                          border_style=rf_border)
                 )
 
                 if bearing_est is not None:

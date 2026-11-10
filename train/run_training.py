@@ -11,16 +11,23 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from train.model import AudioAutoencoder
 
-def train_model(data_path, model_save_path, epochs=15, batch_size=32):
+def train_model(data_path, model_save_path, epochs=15, batch_size=32, ref_scale_path="models/ref_scale.txt"):
     # 1. Load the binary array patches generated in Phase 4
     raw_data = np.load(data_path)
     
-    # Normalize per-patch (same as engine: patch_matrix / patch_matrix.max())
-    # This matches infer/detector.py so training and inference use identical scaling.
-    normalized_data = np.empty_like(raw_data, dtype=np.float32)
-    for i in range(raw_data.shape[0]):
-        pmax = raw_data[i].max() if raw_data[i].max() > 0 else 1.0
-        normalized_data[i] = raw_data[i] / pmax
+    # Compute fixed reference scale: mean of patch maxima across the dataset
+    patch_maxima = np.maximum(raw_data.max(axis=(1, 2)), 1e-10)
+    ref_scale = float(patch_maxima.mean())
+    
+    # Normalize using fixed reference scale (same for all patches)
+    # This matches the inference engine's fixed-reference normalization
+    normalized_data = (raw_data / ref_scale).astype(np.float32)
+    
+    # Save reference scale for inference
+    os.makedirs(os.path.dirname(ref_scale_path), exist_ok=True)
+    with open(ref_scale_path, "w") as f:
+        f.write(str(ref_scale))
+    print(f"[+] Reference scale computed and saved: {ref_scale:.6f}")
     
     # Convert numpy matrix tensors to PyTorch floating point Tensors
     tensor_x = torch.tensor(normalized_data, dtype=torch.float32)

@@ -24,21 +24,39 @@ class Waterfall:
         self.ceil = cfg.ceil_db
         self._rows: deque[np.ndarray] = deque(maxlen=cfg.height)
         self._lut = [f"on {c}" for c in RAMP]
+        # For adaptive range
+        self._adaptive_floor = cfg.floor_db
+        self._adaptive_ceil = cfg.ceil_db
+        self._adapt_alpha = 0.05  # Smoothing factor for adaptive range
 
     def _style(self, level: int) -> str:
         return GAP if level < 0 else self._lut[level]
 
     def push(self, frame) -> None:
-        span = max(self.ceil - self.floor, 1e-9)
-        col = np.full(self.width, -200.0)
-        ok = np.zeros(self.width, dtype=bool)
-
         db = decimate_max(np.asarray(frame.db, dtype=np.float64), self.width)
         v = decimate_max(frame.valid.astype(np.float64), self.width) > 0.5
+        
+        # Adaptive dB range: use 5th and 99th percentile of valid bins
+        valid_db = db[v]
+        if valid_db.size > 0:
+            p5 = np.percentile(valid_db, 5)
+            p99 = np.percentile(valid_db, 99)
+            # Smooth the adaptive range
+            self._adaptive_floor = (1 - self._adapt_alpha) * self._adaptive_floor + self._adapt_alpha * p5
+            self._adaptive_ceil = (1 - self._adapt_alpha) * self._adaptive_ceil + self._adapt_alpha * p99
+            # Ensure minimum span
+            if self._adaptive_ceil - self._adaptive_floor < 10:
+                mid = (self._adaptive_ceil + self._adaptive_floor) / 2
+                self._adaptive_floor = mid - 5
+                self._adaptive_ceil = mid + 5
+        
+        span = max(self._adaptive_ceil - self._adaptive_floor, 1e-9)
+        col = np.full(self.width, -200.0)
+        ok = np.zeros(self.width, dtype=bool)
         col[v] = db[v]
         ok[v] = True
 
-        norm = np.clip((col - self.floor) / span, 0.0, 1.0)
+        norm = np.clip((col - self._adaptive_floor) / span, 0.0, 1.0)
         idx = (norm * (len(self._lut) - 1)).round().astype(np.int8)
         idx[~ok] = -1
         self._rows.append(idx)
@@ -59,5 +77,7 @@ class Waterfall:
         if peak_col is not None and 0 <= peak_col < self.width:
             text.append(" " * peak_col + "^", style="bold white")
         if labels:
+            # Place labels under their respective bands
+            # Calculate approximate column for each band label
             text.append("\n" + " | ".join(labels), style="dim")
         return text

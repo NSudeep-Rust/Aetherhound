@@ -116,7 +116,7 @@ class SimulatedBackend(RFSource):
     def __init__(self, center_hz: float, rate: float, carrier_hz: float = 500e3):
         self.center_hz = center_hz
         self.rate = rate
-        self.carrier_abs_hz = center_hz + carrier_hz
+        self.carrier_offset_hz = carrier_hz  # Store as offset from center
         self._n = 0
         self.inject_carrier = False
 
@@ -132,7 +132,7 @@ class SimulatedBackend(RFSource):
         ).astype(np.complex64)
 
         if self.inject_carrier:
-            offset = self.carrier_abs_hz - self.center_hz
+            offset = self.carrier_offset_hz
             if abs(offset) < self.rate / 2:
                 t = (np.arange(n) + self._n) / self.rate
                 noise += (0.35 * np.exp(2j * np.pi * offset * t)).astype(np.complex64)

@@ -35,7 +35,7 @@ def test_inference_engine_state_logic():
     engine.anomaly_counter = 0
     
     score, state = engine.process_patch(fake_clean_patch)
-    assert state == "CLEAN", "System threw false alarm anomalies on pure silent signals."
+    assert state == "NO_SIGNAL", "Silent patch should produce NO_SIGNAL state."
     
     # 2. Force huge structural error values to check Hysteresis stepping pace
     fake_malware_patch = np.ones((64, 257), dtype=np.float32) * 999.0

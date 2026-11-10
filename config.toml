@@ -22,6 +22,7 @@ armed_frames = 2
 clear_frames = 5
 hold_s = 1.5
 clear_ratio = 0.7
+silence_rms = 1e-6
 
 [log]
 db = "events.db"
@@ -37,8 +38,9 @@ gain_auto = false
 nfft = 2048
 frames_per_spectrum = 4
 baseline_path = "models/rf_baseline.npz"
-z_threshold = 4.5
+z_threshold = 6.0
 min_bins_over = 3
+# peak_search_lo_hz and peak_search_hi_hz are now deprecated; per-band search uses sweep.band_plan
 peak_search_lo_hz = 300000
 peak_search_hi_hz = 800000
 rf_armed_frames = 3
@@ -46,10 +48,13 @@ rf_clear_frames = 15
 
 [sweep]
 enabled = true
-band_plan = [[88000000, 108000000], [400000000, 470000000], [863000000, 870000000], [2400000000, 2483500000]]
+# Narrow band plan: focus on 400-470 MHz (UHF) where covert comms are likely
+# Drop 88-108 MHz (FM broadcast) and 2400-2483.5 MHz (WiFi/ISM) to get better waterfall resolution
+band_plan = [[400000000, 470000000]]
 step_hz = 2000000
 dwell_ms = 15
-dc_guard_bins = 6
+# Increase DC guard to 50 kHz (at 1172 Hz/bin with 2.4M/2048 = ~42 bins)
+dc_guard_bins = 42
 
 [bearing]
 enabled = false

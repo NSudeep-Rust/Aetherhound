@@ -14,9 +14,15 @@ from capture.sweep import SweepEngine
 from config_loader import load_config
 
 
+def mad(data, axis=None):
+    """Median Absolute Deviation - robust scale estimator."""
+    median = np.median(data, axis=axis, keepdims=True)
+    return np.median(np.abs(data - median), axis=axis) * 1.4826
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sweeps", type=int, default=20)
+    ap.add_argument("--sweeps", type=int, default=100)  # Increased from 20 to 100 for stable statistics
     ap.add_argument("--out", default=None)
     ap.add_argument("--config", default=None)
     args = ap.parse_args()
@@ -41,7 +47,8 @@ def main() -> int:
     print()
     stack = np.vstack(rows)
     mean_db = stack.mean(axis=0)
-    std_db = np.maximum(stack.std(axis=0), 0.5)
+    # Use MAD (robust) instead of std, with a floor of 0.5 dB
+    std_db = np.maximum(mad(stack, axis=0), 0.5)
 
     np.savez_compressed(out, mean_db=mean_db, std_db=std_db, valid=valid, freqs=freqs)
     print(f"[+] Baseline: {out} — {stack.shape[0]} sweeps, {int(valid.sum())} valid bins")
