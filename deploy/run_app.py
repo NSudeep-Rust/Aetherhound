@@ -135,7 +135,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--inject", action="store_true", help="Inject test carrier in simulated RF backend")
+    ap.add_argument("--list-devices", action="store_true", help="List available audio input devices and exit")
     args = ap.parse_args()
+
+    if args.list_devices:
+        import sounddevice as sd
+        print("Available audio input devices:")
+        for d in sd.query_devices():
+            if d["max_input_channels"] > 0:
+                print(f"  [{d['index']}] {d['name']}  (ch={d['max_input_channels']}, sr={d['default_samplerate']:.0f} Hz)")
+        return 0
 
     cfg = load_config(args.config)
     engine = AetherHoundEngine(args.config)
@@ -181,6 +190,7 @@ def main() -> int:
     buf = np.zeros(0, dtype=np.float32)
     audio_state, a_score = "CLEAN", 0.0
     last_bearing = 0.0
+    patch = None  # Initialize to avoid UnboundLocalError
 
     try:
         with Live(build_layout(bearing_est is not None), refresh_per_second=cfg.ui.refresh_hz, screen=True) as live:
@@ -190,15 +200,19 @@ def main() -> int:
                 block = audio.read(timeout=frame_dt)
                 if block is not None:
                     buf = np.concatenate([buf, block])
+
+                # Process audio buffer when we have enough samples for a full spectrogram patch
                 if buf.size >= buf_len:
-                    chunk = buf[-buf_len:]
-                    buf = buf[-dsp.nfft:]
+                    chunk = buf[-buf_len:].copy()
+                    # Keep overlap: last nfft samples for continuity with next frame
+                    buf = buf[-dsp.nfft:].copy()
                     filt = apply_filters(chunk, cfg.audio.rate, cfg.band, zero_phase=False)
                     patch = spectrogram_from_array(filt, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
-                        a_score, audio_state = engine.process_patch(patch[:dsp.patch])
+                        patch = patch[:dsp.patch]
+                        a_score, audio_state = engine.process_patch(patch)
                         # Push to audio waterfall for visualization
-                        audio_wf.push(patch[:dsp.patch])
+                        audio_wf.push(patch)
 
                 if worker is not None:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
@@ -219,7 +233,7 @@ def main() -> int:
                 at.add_row("score", f"{a_score:.6f}")
                 at.add_row("threshold", f"{engine.threshold:.6f}")
                 # Add RMS for debugging
-                if 'patch' in locals() and patch.size > 0:
+                if patch is not None and patch.size > 0:
                     rms = float(np.sqrt(np.mean(patch ** 2)))
                     at.add_row("rms", f"{rms:.2e}")
                 # Combine table and waterfall
