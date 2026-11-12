@@ -34,7 +34,7 @@ def test_inference_engine_state_logic():
     engine.state = "CLEAN"
     engine.anomaly_counter = 0
     
-    score, state = engine.process_patch(fake_clean_patch)
+    score, state, _ = engine.process_patch(fake_clean_patch)
     assert state == "NO_SIGNAL", "Silent patch should produce NO_SIGNAL state."
     
     # 2. Use real infected test patch that produces high MSE after per-patch peak normalization
@@ -50,7 +50,7 @@ def test_inference_engine_state_logic():
     
     # Drive hysteresis: armed_frames=4 consecutive anomalies needed to reach ARMED
     for _ in range(engine.armed_limit + 2):
-        score, second_state = engine.process_patch(fake_malware_patch)
+        score, second_state, _ = engine.process_patch(fake_malware_patch)
     
     assert second_state in ["ARMED", "THREAT_DETECTED"], f"Hysteresis pipeline failed to escalate threat level triggers. State: {second_state}"
     print("\n[+] Verification Unit Tests Passed successfully.")

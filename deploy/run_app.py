@@ -41,7 +41,7 @@ def run_self_test() -> int:
 
     all_clean = True
     for i in range(min(20, len(baseline))):
-        score, state = engine.process_patch(baseline[i])
+        score, state, _ = engine.process_patch(baseline[i])
         if state == "THREAT_DETECTED" or score > limit:
             all_clean = False
             print(f"  FAIL: patch {i} score={score:.6f} state={state} limit={limit:.6f}")
@@ -231,6 +231,7 @@ def main() -> int:
     fbuf = np.zeros(0, dtype=np.float64)
     buf = np.zeros(0, dtype=np.float32)
     audio_state, a_score = "CLEAN", 0.0
+    a_anomalous = False
     last_bearing = 0.0
     patch = None  # Initialize to avoid UnboundLocalError
 
@@ -265,15 +266,17 @@ def main() -> int:
                     patch = spectrogram_from_array(chunk, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
                         patch = patch[:dsp.patch]
-                        a_score, audio_state = engine.process_patch(patch)
+                        a_score, audio_state, a_anomalous = engine.process_patch(patch)
                         # Push to audio waterfall for visualization (always, even on NO_SIGNAL)
                         audio_wf.push(patch)
                     else:
                         # Not enough frames yet — push empty to keep panel alive
                         audio_wf.push(None)
+                        a_anomalous = False
                 else:
                     # Not enough buffer yet — push empty to keep panel alive
                     audio_wf.push(None)
+                    a_anomalous = False
 
                 if worker is not None:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
@@ -376,7 +379,7 @@ def main() -> int:
                     live.refresh()
 
                 if buzzer:
-                    buzzer.set(threat)
+                    buzzer.set(a_anomalous or rf_threat)
 
                 slack = frame_dt - (time.perf_counter() - t0)
                 if slack > 0:

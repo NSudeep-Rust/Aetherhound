@@ -95,7 +95,7 @@ class AetherHoundEngine:
             if old_state != self.state:
                 self.log_event(0.0, self.state, f"State change to {self.state}: mic silence (rms={rms:.2e})")
                 print(f"[!] STATE: {old_state} -> {self.state}")
-            return 0.0, self.state
+            return 0.0, self.state, False
         self._silent_since = None
 
         mse_score = self.score(patch_matrix)
@@ -129,7 +129,7 @@ class AetherHoundEngine:
             self.log_event(mse_score, self.state, f"State change to {self.state}: {desc}")
             print(f"[!] STATE: {old_state} -> {self.state} | Score: {mse_score:.6f}")
             
-        return mse_score, self.state
+        return mse_score, self.state, is_anomalous
 
 if __name__ == "__main__":
     print("[*] Instantiating live runtime test loop over simulated baseline matrix...")
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     print(f"[*] Simulating real-time signal loop over {len(infected_tensors)} live buffer steps...")
     
     for step, single_patch in enumerate(infected_tensors[:20]):
-        score, current_status = engine.process_patch(single_patch)
+        score, current_status, _ = engine.process_patch(single_patch)
         if current_status == "THREAT_DETECTED":
             print(f"[+] Operational Guard Verification Passed: Alert tripped at frame cycle {step}!")
             break
