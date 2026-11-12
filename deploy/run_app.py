@@ -66,13 +66,18 @@ class AudioWaterfall:
             "#df9350", "#e7ad4a", "#ecc947", "#f0e64e", "#f8f76a", "#fdff9a",
         ]
         self._lut = [f"on {c}" for c in self.RAMP]
-        self._adaptive_floor = -100.0
-        self._adaptive_ceil = -20.0
-        self._adapt_alpha = 0.1
+        # Fixed dB range for stable rendering (no adaptive flicker)
+        self._floor_db = -100.0
+        self._ceil_db = -20.0
     
     def push(self, patch: np.ndarray) -> None:
         """Push a patch (time x freq) and extract a column for the waterfall."""
-        if patch.size == 0:
+        if patch is None or patch.size == 0:
+            # Push a silent column when no data (keeps panel from going blank)
+            col_db = np.full(self.width, self._floor_db)
+            self._rows.append(np.zeros(self.width, dtype=np.int8))
+            if len(self._rows) > self.height:
+                self._rows.pop(0)
             return
         # patch shape: (time_frames, freq_bins)
         # Take the mean across time frames for this patch to get one column
@@ -95,18 +100,9 @@ class AudioWaterfall:
         from dsp.rf_pipeline import decimate_max
         col_db = decimate_max(col_db, self.width)
         
-        # Adaptive range
-        p5 = np.percentile(col_db, 5)
-        p99 = np.percentile(col_db, 99)
-        self._adaptive_floor = (1 - self._adapt_alpha) * self._adaptive_floor + self._adapt_alpha * p5
-        self._adaptive_ceil = (1 - self._adapt_alpha) * self._adaptive_ceil + self._adapt_alpha * p99
-        if self._adaptive_ceil - self._adaptive_floor < 10:
-            mid = (self._adaptive_ceil + self._adaptive_floor) / 2
-            self._adaptive_floor = mid - 5
-            self._adaptive_ceil = mid + 5
-        
-        span = max(self._adaptive_ceil - self._adaptive_floor, 1e-9)
-        norm = np.clip((col_db - self._adaptive_floor) / span, 0.0, 1.0)
+        # Fixed dB range mapping (no adaptive range = no flicker)
+        span = max(self._ceil_db - self._floor_db, 1e-9)
+        norm = np.clip((col_db - self._floor_db) / span, 0.0, 1.0)
         idx = (norm * (len(self._lut) - 1)).round().astype(np.int8)
         
         self._rows.append(idx)
@@ -192,8 +188,11 @@ def main() -> int:
     last_bearing = 0.0
     patch = None  # Initialize to avoid UnboundLocalError
 
+    # Build layout ONCE outside the loop to prevent UI flickering
+    layout = build_layout(bearing_est is not None)
+
     try:
-        with Live(build_layout(bearing_est is not None), refresh_per_second=cfg.ui.refresh_hz, screen=True) as live:
+        with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True) as live:
             while True:
                 t0 = time.perf_counter()
 
@@ -207,22 +206,20 @@ def main() -> int:
                     # Keep overlap: last nfft samples for continuity with next frame
                     buf = buf[-dsp.nfft:].copy()
                     filt = apply_filters(chunk, cfg.audio.rate, cfg.band, zero_phase=False)
-                    # Normalize audio to target RMS to match training data amplitude
-                    # Training data: white noise RMS ~0.005 with gain 0.2-5x -> mean RMS ~0.01
-                    # Without this, live audio with different amplitude produces spectrogram
-                    # values far outside the training distribution, causing huge MSE scores.
-                    _target_rms = 0.01
-                    _rms = float(np.sqrt(np.mean(filt ** 2)))
-                    if _rms > 1e-10:
-                        _scale = _target_rms / _rms
-                        _scale = float(np.clip(_scale, 0.1, 10.0))
-                        filt = filt * _scale
+                    # NO RMS normalization here — it amplifies near-silence and causes false THREAT.
+                    # The engine already handles silence via its internal silence gate (NO_SIGNAL state).
                     patch = spectrogram_from_array(filt, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
                         patch = patch[:dsp.patch]
                         a_score, audio_state = engine.process_patch(patch)
-                        # Push to audio waterfall for visualization
+                        # Push to audio waterfall for visualization (always, even on NO_SIGNAL)
                         audio_wf.push(patch)
+                    else:
+                        # Not enough frames yet — push empty to keep panel alive
+                        audio_wf.push(None)
+                else:
+                    # Not enough buffer yet — push empty to keep panel alive
+                    audio_wf.push(None)
 
                 if worker is not None:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
@@ -230,7 +227,6 @@ def main() -> int:
                     frame, z, peak_hz, rf_state, sweeps = None, 0.0, 0.0, "DISABLED", 0
                 threat = rf_state == "THREAT_DETECTED" or audio_state == "THREAT_DETECTED"
 
-                layout = build_layout(bearing_est is not None)
                 label = "THREAT DETECTED" if threat else "CLEAN"
                 style = "bold white on red" if threat else "bold black on green"
                 layout["header"].update(Panel(Text(label, justify="center", style=style)))
