@@ -3,7 +3,7 @@
 #   pactl load-module module-null-sink sink_name=virtual_mic sink_properties=device.description="Virtual_Mic"
 #   pactl set-default-source virtual_mic.monitor
 # Then run: python deploy/run_app.py --list-devices  to find the index, or set device=6 for pulse backend
-device = 6             # 6 = pulse backend (accesses virtual_mic.monitor); -1 = system default
+device = 4             # 4 = HD-Audio Generic ALC295 Analog (real microphone); -1 = system default
 rate = 48000
 blocksize = 1024
 channels = 1
