@@ -39,7 +39,14 @@ def test_inference_engine_state_logic():
     
     # 2. Use real infected test patch that produces high MSE after per-patch peak normalization
     test_patches = np.load("data/test_patches.npy")
-    fake_malware_patch = test_patches[0].astype(np.float32)
+    limit = engine.threshold * engine.threat_margin
+    # Find a patch that is both above silence gate and anomalous
+    fake_malware_patch = None
+    for p in test_patches:
+        if float(np.sqrt(np.mean(p ** 2))) >= engine.silence_rms and engine.score(p) > limit:
+            fake_malware_patch = p.astype(np.float32)
+            break
+    assert fake_malware_patch is not None, "No anomalous test patch found above silence gate"
     
     # Drive hysteresis: armed_frames=4 consecutive anomalies needed to reach ARMED
     for _ in range(engine.armed_limit + 2):

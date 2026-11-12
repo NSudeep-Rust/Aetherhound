@@ -21,7 +21,7 @@ from capture.live_audio import LiveAudioSource
 from capture.rf_source import open_rf_source
 from capture.sweep import SweepEngine, SweepWorker
 from config_loader import load_config
-from dsp.pipeline import apply_filters, spectrogram_from_array
+from dsp.pipeline import StreamFilter, spectrogram_from_array
 from infer.detector import AetherHoundEngine
 from infer.rf_detector import RFAnomalyDetector
 from ui.alert import Buzzer
@@ -222,6 +222,8 @@ def main() -> int:
 
     dsp, frame_dt = cfg.dsp, 1.0 / max(cfg.ui.refresh_hz, 1)
     buf_len = dsp.nfft + (dsp.patch - 1) * dsp.hop
+    sfilt = StreamFilter(cfg.audio.rate, cfg.band)
+    fbuf = np.zeros(0, dtype=np.float64)
     buf = np.zeros(0, dtype=np.float32)
     audio_state, a_score = "CLEAN", 0.0
     last_bearing = 0.0
@@ -247,17 +249,15 @@ def main() -> int:
 
                 block = audio.read(timeout=frame_dt)
                 if block is not None:
-                    buf = np.concatenate([buf, np.ravel(block)])
+                    block = np.ravel(block).astype(np.float32)
+                    fbuf = np.concatenate([fbuf, sfilt(block)])
 
                 # Process audio buffer when we have enough samples for a full spectrogram patch
-                if buf.size >= buf_len:
-                    chunk = buf[-buf_len:].copy()
+                if fbuf.size >= buf_len:
+                    chunk = fbuf[-buf_len:].copy()
                     # Keep overlap: last nfft samples for continuity with next frame
-                    buf = buf[-dsp.nfft:].copy()
-                    filt = apply_filters(chunk, cfg.audio.rate, cfg.band, zero_phase=False)
-                    # NO RMS normalization here — it amplifies near-silence and causes false THREAT.
-                    # The engine already handles silence via its internal silence gate (NO_SIGNAL state).
-                    patch = spectrogram_from_array(filt, cfg.audio.rate, dsp.nfft, dsp.hop)
+                    fbuf = fbuf[-dsp.nfft:].copy()
+                    patch = spectrogram_from_array(chunk, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
                         patch = patch[:dsp.patch]
                         a_score, audio_state = engine.process_patch(patch)
@@ -301,7 +301,9 @@ def main() -> int:
                     # Combine table and waterfall using Group (proper vertical composition)
                     audio_content = Group(at, Text(""), audio_wf.render())
                     # Border color follows audio state
-                    audio_border = "red" if audio_state == "THREAT_DETECTED" else ("yellow" if audio_state == "ARMED" else ("dim" if audio_state == "NO_SIGNAL" else "cyan"))
+                    audio_border = ("red" if audio_state in ("THREAT_DETECTED", "SENSOR_LOSS")
+                                    else "yellow" if audio_state == "ARMED"
+                                    else "dim" if audio_state == "NO_SIGNAL" else "cyan")
                     layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
                     _prev_audio_state = audio_state
                     _prev_a_score = a_score

@@ -22,9 +22,15 @@ class AetherHoundEngine:
         self.db_path = cfg.log.db
         self.armed_limit = cfg.detect.armed_frames
         self.clear_limit = cfg.detect.clear_frames
-        self.silence_rms = float(getattr(cfg.detect, "silence_rms", 1e-6))
         self.threat_margin = float(getattr(cfg.detect, "threat_margin", 1.25))
         self.sensor_loss_s = float(getattr(cfg.detect, "sensor_loss_s", 5.0))
+        
+        # Load real-room RMS floor for silence gating (falls back to config value)
+        p = Path("models/baseline_rms.txt")
+        if p.exists():
+            self.silence_rms = float(p.read_text().strip()) * 0.25
+        else:
+            self.silence_rms = float(getattr(cfg.detect, "silence_rms", 1e-6))
         
         # Initialize internal monitoring metrics tracking
         self.anomaly_counter = 0
@@ -33,7 +39,7 @@ class AetherHoundEngine:
         self._silent_since = None
         
         self._init_database()
-        print(f"[+] Engine Initialized. Threshold: {self.threshold:.6f} | Margin: {self.threat_margin}x")
+        print(f"[+] Engine Initialized. Threshold: {self.threshold:.6f} | Margin: {self.threat_margin}x | Silence RMS: {self.silence_rms:.2e}")
 
     def _init_database(self):
         conn = sqlite3.connect(self.db_path)
@@ -60,6 +66,19 @@ class AetherHoundEngine:
         conn.commit()
         conn.close()
 
+    def score(self, patch_matrix):
+        """Compute reconstruction MSE for a patch using per-patch peak normalization.
+
+        np.clip(..., 2.0) is the sigmoid-saturation guard: peak normalization pins
+        the 99.9th percentile at 1.0, so only the top 0.1 % can run away; clipping
+        stops a single loud bin from railing the decoder.
+        """
+        peak = float(np.percentile(patch_matrix, 99.9))
+        norm = np.clip(patch_matrix / max(peak, 1e-12), 0.0, 2.0).astype(np.float32)
+        inp = np.expand_dims(norm, axis=0)
+        out = self.ort_session.run(None, {self.ort_session.get_inputs()[0].name: inp})[0][0]
+        return float(np.mean((norm - out) ** 2))
+
     def process_patch(self, patch_matrix):
         # Silence gate: a dead mic is not an anomaly
         rms = float(np.sqrt(np.mean(patch_matrix ** 2)))
@@ -79,20 +98,7 @@ class AetherHoundEngine:
             return 0.0, self.state
         self._silent_since = None
 
-        # Level-invariant, in-range normalization. Matches calibrate_threshold.py.
-        # Peak (99.9th pct) normalization keeps inputs near 1.0 like training and
-        # removes mic-gain dependence entirely.
-        peak = float(np.percentile(patch_matrix, 99.9))
-        norm_patch = (patch_matrix / max(peak, 1e-12)).astype(np.float32)
-        input_tensor = np.expand_dims(norm_patch, axis=0) # Add batch dimension
-        
-        # 1. Run low-overhead math evaluation via ONNX Runtime
-        ort_inputs = {self.ort_session.get_inputs()[0].name: input_tensor}
-        ort_outputs = self.ort_session.run(None, ort_inputs)
-        reconstructed_patch = ort_outputs[0][0]
-        
-        # 2. Compute Reconstruction Mean Squared Error (Loss Score)
-        mse_score = np.mean((norm_patch - reconstructed_patch) ** 2)
+        mse_score = self.score(patch_matrix)
         is_anomalous = mse_score > (self.threshold * self.threat_margin)
         
         # 3. Process Hysteresis State Transitions Machine

@@ -42,6 +42,26 @@ def spectrogram_from_array(audio: np.ndarray, sample_rate: float,
     return np.abs(spec).T
 
 
+class StreamFilter:
+    """Stateful version of apply_filters for chunked live input.
+
+    Carries sosfilt filter state across chunks so the impulse response
+    does not restart at every chunk boundary (which caused broadband
+    transients that the autoencoder read as anomalies).
+    """
+    def __init__(self, sample_rate: float, band):
+        self.sos = build_filter(sample_rate, band.lo_hz, band.hi_hz,
+                                band.notch_base_hz, band.notch_harmonics, band.notch_q)
+        self.zi = None
+
+    def __call__(self, x):
+        x = np.asarray(x, dtype=np.float64)
+        if self.zi is None:
+            self.zi = signal.sosfilt_zi(self.sos) * x[0]
+        y, self.zi = signal.sosfilt(self.sos, x, zi=self.zi)
+        return y
+
+
 def extract_spectrogram(file_path, nfft: int = 512, hop: int = 32,
                         band=None, apply_filters_flag: bool = True) -> np.ndarray:
     sample_rate, audio_data = wav.read(file_path)
