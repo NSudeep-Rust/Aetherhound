@@ -17,7 +17,7 @@ GAP = "on #23272f"
 
 
 class Waterfall:
-    def __init__(self, cfg):
+    def __init__(self, cfg, floor_db: float | None = None, ceil_db: float | None = None):
         self.width = cfg.width
         self.height = cfg.height
         self.floor = cfg.floor_db
@@ -25,8 +25,15 @@ class Waterfall:
         self._rows: deque[np.ndarray] = deque(maxlen=cfg.height)
         self._lut = [f"on {c}" for c in RAMP]
         # Fixed dB range for stable rendering (no adaptive flicker / stripes)
-        self._floor_db = cfg.floor_db
-        self._ceil_db = cfg.ceil_db
+        # Overrides allow baseline-derived range at startup (prevents saturation)
+        self._floor_db = floor_db if floor_db is not None else cfg.floor_db
+        self._ceil_db = ceil_db if ceil_db is not None else cfg.ceil_db
+
+    def set_range_from_baseline(self, baseline_mean_db: float, baseline_std_db: float):
+        """Derive dB range from baseline mean/std: [mean - 3*std, mean + 3*std].
+        Prevents waterfall saturation when baseline and sweep are at different frequencies."""
+        self._floor_db = baseline_mean_db - 3.0 * baseline_std_db
+        self._ceil_db = baseline_mean_db + 3.0 * baseline_std_db
 
     def _style(self, level: int) -> str:
         return GAP if level < 0 else self._lut[level]

@@ -34,7 +34,7 @@ sensor_loss_s = 5.0
 db = "events.db"
 
 [rf]
-enabled = true
+enabled = false
 backend = "auto"                 # auto | rtlsdr | hackrf | simulated
 device_index = 0
 center_hz = 100000000
@@ -53,7 +53,7 @@ rf_armed_frames = 3
 rf_clear_frames = 15
 
 [sweep]
-enabled = true
+enabled = false
 # Narrow band plan: focus on 400-470 MHz (UHF) where covert comms are likely
 # Drop 88-108 MHz (FM broadcast) and 2400-2483.5 MHz (WiFi/ISM) to get better waterfall resolution
 band_plan = [[400000000, 470000000]]

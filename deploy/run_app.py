@@ -274,14 +274,15 @@ def main() -> int:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
                 else:
                     frame, z, peak_hz, rf_state, sweeps = None, 0.0, 0.0, "DISABLED", 0
-                threat = rf_state == "THREAT_DETECTED" or audio_state == "THREAT_DETECTED"
+                # Header reflects RF threat only; audio SENSOR_LOSS is shown in the audio panel border
+                rf_threat = rf_state == "THREAT_DETECTED"
 
-                # Only update header when threat state changes
-                if _prev_threat != threat:
-                    label = "THREAT DETECTED" if threat else "CLEAN"
-                    style = "bold white on red" if threat else "bold black on green"
+                # Only update header when RF threat state changes
+                if _prev_threat != rf_threat:
+                    label = "THREAT DETECTED" if rf_threat else "CLEAN"
+                    style = "bold white on red" if rf_threat else "bold black on green"
                     layout["header"].update(Panel(Text(label, justify="center", style=style)))
-                    _prev_threat = threat
+                    _prev_threat = rf_threat
                     _dirty = True
 
                 # Only update audio panel when state or score meaningfully changes
