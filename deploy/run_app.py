@@ -180,7 +180,7 @@ def main() -> int:
     bp = Path("models/rf_baseline.npz")
     if bp.exists():
         _b = np.load(bp)
-        wf.set_range_from_baseline(float(np.mean(_b["mean"])), float(np.mean(_b["std"])))
+        wf.set_range_from_baseline(float(np.mean(_b["mean_db"])), float(np.mean(_b["std_db"])))
     # Audio waterfall for the acoustic panel
     audio_wf = AudioWaterfall(width=cfg.waterfall.width, height=20, sample_rate=cfg.audio.rate, nfft=cfg.dsp.nfft)
     buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s) if cfg.ui.buzzer else None
