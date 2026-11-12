@@ -95,14 +95,14 @@ class AudioWaterfall:
         # Fixed dB range for stable rendering (no adaptive flicker)
         self._floor_db = -100.0
         self._ceil_db = -20.0
-        # Silence level: map to mid-range color (not black) so panel is visible
-        self._silence_idx = len(self._lut) // 2
+        # Silence level: map to black (index 0) so panel is dark when silent
+        self._silence_idx = 0
     
     def push(self, patch: np.ndarray) -> None:
         """Push a patch (time x freq) and extract a column for the waterfall."""
         if patch is None or patch.size == 0:
-            # Push a mid-level column when no data (keeps panel visible, not black)
-            self._rows.append(np.full(self.width, self._silence_idx, dtype=np.int8))
+            # Push black column when no data (panel dark when silent, no animation)
+            self._rows.append(np.zeros(self.width, dtype=np.int8))
             if len(self._rows) > self.height:
                 self._rows.pop(0)
             return
@@ -341,7 +341,9 @@ def main() -> int:
                         )
                         rf_text.append_text(wf.render(col, frame.band_names))
                     elif not rf_enabled:
-                        rf_text.append("RF disabled in config", style="dim")
+                        # Show audio waterfall in right panel when RF is disabled
+                        rf_text.append_text(audio_wf.render())
+                        rf_text.append("\nAudio waterfall (RF disabled)", style="dim")
                     else:
                         rf_text.append("first sweep…", style="dim")
                     # RF panel border follows RF state, not combined threat

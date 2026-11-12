@@ -22,9 +22,9 @@ patch = 64
 
 [detect]
 threshold_file = "models/threshold.txt"
-armed_frames = 2
-clear_frames = 4
-hold_s = 1.0
+armed_frames = 1
+clear_frames = 2
+hold_s = 0.5
 clear_ratio = 0.7
 silence_rms = 1e-6
 threat_margin = 1.25
