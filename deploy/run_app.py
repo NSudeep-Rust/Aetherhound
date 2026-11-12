@@ -176,6 +176,11 @@ def main() -> int:
     cfg = load_config(args.config)
     engine = AetherHoundEngine(args.config)
     wf = Waterfall(cfg.waterfall)
+    # Derive waterfall dB range from RF baseline if available
+    bp = Path("models/rf_baseline.npz")
+    if bp.exists():
+        _b = np.load(bp)
+        wf.set_range_from_baseline(float(np.mean(_b["mean"])), float(np.mean(_b["std"])))
     # Audio waterfall for the acoustic panel
     audio_wf = AudioWaterfall(width=cfg.waterfall.width, height=20, sample_rate=cfg.audio.rate, nfft=cfg.dsp.nfft)
     buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s) if cfg.ui.buzzer else None
@@ -274,15 +279,25 @@ def main() -> int:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
                 else:
                     frame, z, peak_hz, rf_state, sweeps = None, 0.0, 0.0, "DISABLED", 0
-                # Header reflects RF threat only; audio SENSOR_LOSS is shown in the audio panel border
-                rf_threat = rf_state == "THREAT_DETECTED"
+                # Aggregate threat across audio and RF layers
+                audio_threat = audio_state == "THREAT_DETECTED"
+                rf_threat = rf_enabled and rf_state == "THREAT_DETECTED"
+                threat = audio_threat or rf_threat
 
-                # Only update header when RF threat state changes
-                if _prev_threat != rf_threat:
-                    label = "THREAT DETECTED" if rf_threat else "CLEAN"
-                    style = "bold white on red" if rf_threat else "bold black on green"
+                # Only update header when aggregate threat state changes
+                if _prev_threat != threat:
+                    if audio_threat or rf_threat:
+                        label, style = "THREAT DETECTED", "bold white on red"
+                    elif audio_state == "SENSOR_LOSS":
+                        label, style = "SENSOR LOSS", "bold white on dark_orange"
+                    elif audio_state == "NO_SIGNAL":
+                        label, style = "NO SIGNAL", "bold black on grey62"
+                    elif audio_state == "ARMED":
+                        label, style = "ARMED", "bold black on yellow"
+                    else:
+                        label, style = "CLEAN", "bold black on green"
                     layout["header"].update(Panel(Text(label, justify="center", style=style)))
-                    _prev_threat = rf_threat
+                    _prev_threat = threat
                     _dirty = True
 
                 # Only update audio panel when state or score meaningfully changes
@@ -325,6 +340,8 @@ def main() -> int:
                             style="bold white on red" if rf_state == "THREAT_DETECTED" else "bold white",
                         )
                         rf_text.append_text(wf.render(col, frame.band_names))
+                    elif not rf_enabled:
+                        rf_text.append("RF disabled in config", style="dim")
                     else:
                         rf_text.append("first sweep…", style="dim")
                     # RF panel border follows RF state, not combined threat
