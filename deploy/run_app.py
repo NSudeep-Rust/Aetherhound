@@ -207,6 +207,16 @@ def main() -> int:
                     # Keep overlap: last nfft samples for continuity with next frame
                     buf = buf[-dsp.nfft:].copy()
                     filt = apply_filters(chunk, cfg.audio.rate, cfg.band, zero_phase=False)
+                    # Normalize audio to target RMS to match training data amplitude
+                    # Training data: white noise RMS ~0.005 with gain 0.2-5x -> mean RMS ~0.01
+                    # Without this, live audio with different amplitude produces spectrogram
+                    # values far outside the training distribution, causing huge MSE scores.
+                    _target_rms = 0.01
+                    _rms = float(np.sqrt(np.mean(filt ** 2)))
+                    if _rms > 1e-10:
+                        _scale = _target_rms / _rms
+                        _scale = float(np.clip(_scale, 0.1, 10.0))
+                        filt = filt * _scale
                     patch = spectrogram_from_array(filt, cfg.audio.rate, dsp.nfft, dsp.hop)
                     if patch.shape[0] >= dsp.patch:
                         patch = patch[:dsp.patch]
@@ -237,8 +247,10 @@ def main() -> int:
                     rms = float(np.sqrt(np.mean(patch ** 2)))
                     at.add_row("rms", f"{rms:.2e}")
                 # Combine table and waterfall
+                # Render Table directly via Console to avoid "<rich.table.Table object at 0x...>" bug
                 audio_content = Text()
-                audio_content.append_text(Text.from_ansi(str(at)))
+                _table_console = Console(file=audio_content, width=at.width if at.width else 108, force_terminal=True)
+                _table_console.print(at)
                 audio_content.append("\n")
                 audio_content.append_text(audio_wf.render())
                 # Border color follows audio state
