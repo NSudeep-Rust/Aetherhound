@@ -240,18 +240,17 @@ def main() -> int:
 
     # Track previous values to avoid redundant updates (prevents flicker)
     _prev_audio_state = None
-    _prev_a_score = None
     _prev_rf_state = None
     _prev_peak_hz = None
     _prev_sweeps = None
     _prev_threat = None
-    _dirty = False
+    _prev_footer_text = None
+    _cached_audio_table = None
 
     try:
         with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True, auto_refresh=False) as live:
             while True:
                 t0 = time.perf_counter()
-                _dirty = False
 
                 block = audio.read(timeout=frame_dt)
                 if block is not None:
@@ -301,12 +300,9 @@ def main() -> int:
                         label, style = "CLEAN", "bold black on green"
                     layout["header"].update(Panel(Text(label, justify="center", style=style)))
                     _prev_threat = threat
-                    _dirty = True
 
-                # Only update audio panel when state or score meaningfully changes
-                score_changed = _prev_a_score is None or abs(a_score - _prev_a_score) > 0.0001
-                if _prev_audio_state != audio_state or score_changed:
-                    # Acoustic panel: show audio waterfall + state info
+                # Rebuild audio table only when state changes (stable display, no flicker)
+                if _prev_audio_state != audio_state or _cached_audio_table is None:
                     at = Table(expand=True, show_header=False)
                     at.add_column(style="cyan")
                     at.add_column(style="magenta")
@@ -317,16 +313,15 @@ def main() -> int:
                     if patch is not None and patch.size > 0:
                         rms = float(np.sqrt(np.mean(patch ** 2)))
                         at.add_row("rms", f"{rms:.2e}")
-                    # Combine table and waterfall using Group (proper vertical composition)
-                    audio_content = Group(at, Text(""), audio_wf.render())
-                    # Border color follows audio state
-                    audio_border = ("red" if audio_state in ("THREAT_DETECTED", "SENSOR_LOSS")
-                                    else "yellow" if audio_state == "ARMED"
-                                    else "dim" if audio_state == "NO_SIGNAL" else "cyan")
-                    layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
+                    _cached_audio_table = at
                     _prev_audio_state = audio_state
-                    _prev_a_score = a_score
-                    _dirty = True
+
+                # Always update audio panel so waterfall scrolls smoothly every frame
+                audio_content = Group(_cached_audio_table, Text(""), audio_wf.render())
+                audio_border = ("red" if audio_state in ("THREAT_DETECTED", "SENSOR_LOSS")
+                                else "yellow" if audio_state == "ARMED"
+                                else "dim" if audio_state == "NO_SIGNAL" else "cyan")
+                layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
 
                 # Only update RF panel when RF state or peak changes
                 rf_changed = (_prev_rf_state != rf_state or
@@ -358,7 +353,6 @@ def main() -> int:
                     _prev_rf_state = rf_state
                     _prev_peak_hz = peak_hz
                     _prev_sweeps = sweeps
-                    _dirty = True
 
                 if bearing_est is not None:
                     if peak_hz > 0 and time.time() - last_bearing > 5:
@@ -367,16 +361,18 @@ def main() -> int:
                     bt = Text("\n".join(polar_plot(
                         bearing_est.last_deg, bearing_est.last_conf, cfg.bearing.positions)))
                     layout["bearing"].update(Panel(bt, title="Bearing (RSSI)", border_style="magenta"))
-                    _dirty = True
 
-                layout["footer"].update(Panel(Text(
+                # Only update footer when info changes (prevents constant refresh)
+                footer_text = (
                     f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
                     f"  |  {len(cfg.sweep.band_plan)} bands"
-                )))
-                _dirty = True
+                )
+                if _prev_footer_text != footer_text:
+                    layout["footer"].update(Panel(Text(footer_text)))
+                    _prev_footer_text = footer_text
 
-                if _dirty:
-                    live.refresh()
+                # Always refresh for smooth waterfall scrolling (no animation when silent)
+                live.refresh()
 
                 if buzzer:
                     buzzer.set(a_anomalous or rf_threat)
