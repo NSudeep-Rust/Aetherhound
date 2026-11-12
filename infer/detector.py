@@ -17,28 +17,23 @@ class AetherHoundEngine:
         self.ort_session = ort.InferenceSession("models/autoencoder.onnx")
         with open(cfg.detect.threshold_file, "r") as f:
             self.threshold = float(f.read().strip())
-            
-        # Load fixed reference scale for normalization
-        ref_scale_path = Path("models/ref_scale.txt")
-        if ref_scale_path.exists():
-            with open(ref_scale_path, "r") as f:
-                self.ref_scale = float(f.read().strip())
-        else:
-            self.ref_scale = 1.0
         
         # 3. State Parameters from config
         self.db_path = cfg.log.db
         self.armed_limit = cfg.detect.armed_frames
         self.clear_limit = cfg.detect.clear_frames
         self.silence_rms = float(getattr(cfg.detect, "silence_rms", 1e-6))
+        self.threat_margin = float(getattr(cfg.detect, "threat_margin", 1.25))
+        self.sensor_loss_s = float(getattr(cfg.detect, "sensor_loss_s", 5.0))
         
         # Initialize internal monitoring metrics tracking
         self.anomaly_counter = 0
         self.clean_counter = 0
-        self.state = "CLEAN"  # Options: CLEAN, ARMED, THREAT_DETECTED, NO_SIGNAL
+        self.state = "CLEAN"  # Options: CLEAN, ARMED, THREAT_DETECTED, NO_SIGNAL, SENSOR_LOSS
+        self._silent_since = None
         
         self._init_database()
-        print(f"[+] Engine Initialized. Threshold: {self.threshold:.6f} | Ref scale: {self.ref_scale:.6f}")
+        print(f"[+] Engine Initialized. Threshold: {self.threshold:.6f} | Margin: {self.threat_margin}x")
 
     def _init_database(self):
         conn = sqlite3.connect(self.db_path)
@@ -69,17 +64,26 @@ class AetherHoundEngine:
         # Silence gate: a dead mic is not an anomaly
         rms = float(np.sqrt(np.mean(patch_matrix ** 2)))
         if rms < self.silence_rms:
+            now = time.time()
+            if self._silent_since is None:
+                self._silent_since = now
             self.anomaly_counter = 0
             self.clean_counter = 0
             old_state = self.state
-            self.state = "NO_SIGNAL"
+            self.state = ("SENSOR_LOSS"
+                          if now - self._silent_since >= self.sensor_loss_s
+                          else "NO_SIGNAL")
             if old_state != self.state:
                 self.log_event(0.0, self.state, f"State change to {self.state}: mic silence (rms={rms:.2e})")
-                print(f"[!] SYSTEM ALARM STATE ALERT: {old_state} -> {self.state} | Score: 0.000000")
+                print(f"[!] STATE: {old_state} -> {self.state}")
             return 0.0, self.state
+        self._silent_since = None
 
-        # Normalize using fixed reference scale (same as training)
-        norm_patch = (patch_matrix / self.ref_scale).astype(np.float32)
+        # Level-invariant, in-range normalization. Matches calibrate_threshold.py.
+        # Peak (99.9th pct) normalization keeps inputs near 1.0 like training and
+        # removes mic-gain dependence entirely.
+        peak = float(np.percentile(patch_matrix, 99.9))
+        norm_patch = (patch_matrix / max(peak, 1e-12)).astype(np.float32)
         input_tensor = np.expand_dims(norm_patch, axis=0) # Add batch dimension
         
         # 1. Run low-overhead math evaluation via ONNX Runtime
@@ -89,13 +93,13 @@ class AetherHoundEngine:
         
         # 2. Compute Reconstruction Mean Squared Error (Loss Score)
         mse_score = np.mean((norm_patch - reconstructed_patch) ** 2)
-        is_anomalous = mse_score > self.threshold
+        is_anomalous = mse_score > (self.threshold * self.threat_margin)
         
         # 3. Process Hysteresis State Transitions Machine
         old_state = self.state
         
-        # If we were in NO_SIGNAL and now have signal, reset to CLEAN
-        if old_state == "NO_SIGNAL":
+        # If we were in NO_SIGNAL/SENSOR_LOSS and now have signal, reset to CLEAN
+        if old_state in ("NO_SIGNAL", "SENSOR_LOSS"):
             self.state = "CLEAN"
             self.anomaly_counter = 0
             self.clean_counter = 0
@@ -115,9 +119,9 @@ class AetherHoundEngine:
                 
         # 4. If system state has transitioned, commit data records to the SQLite database
         if old_state != self.state or self.state == "THREAT_DETECTED":
-            desc = f"Anomaly score {mse_score:.6f} breached threshold {self.threshold:.6f}" if is_anomalous else f"Room sound returned to normal."
+            desc = f"Anomaly score {mse_score:.6f} breached threshold {self.threshold * self.threat_margin:.6f}" if is_anomalous else f"Room sound returned to normal."
             self.log_event(mse_score, self.state, f"State change to {self.state}: {desc}")
-            print(f"[!] SYSTEM ALARM STATE ALERT: {old_state} -> {self.state} | Score: {mse_score:.6f}")
+            print(f"[!] STATE: {old_state} -> {self.state} | Score: {mse_score:.6f}")
             
         return mse_score, self.state
 

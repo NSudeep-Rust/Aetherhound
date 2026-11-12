@@ -37,13 +37,13 @@ def test_inference_engine_state_logic():
     score, state = engine.process_patch(fake_clean_patch)
     assert state == "NO_SIGNAL", "Silent patch should produce NO_SIGNAL state."
     
-    # 2. Force huge structural error values to check Hysteresis stepping pace
-    fake_malware_patch = np.ones((64, 257), dtype=np.float32) * 999.0
+    # 2. Use real infected test patch that produces high MSE after per-patch peak normalization
+    test_patches = np.load("data/test_patches.npy")
+    fake_malware_patch = test_patches[0].astype(np.float32)
     
-    # First heavy anomaly -> Step into ARMED status
-    engine.process_patch(fake_malware_patch)
-    # Second heavy anomaly -> Escalates into CRITICAL THREAT status alert
-    score, second_state = engine.process_patch(fake_malware_patch)
+    # Drive hysteresis: armed_frames=4 consecutive anomalies needed to reach ARMED
+    for _ in range(engine.armed_limit + 2):
+        score, second_state = engine.process_patch(fake_malware_patch)
     
-    assert second_state in ["ARMED", "THREAT_DETECTED"], "Hysteresis pipeline failed to escalate threat level triggers."
+    assert second_state in ["ARMED", "THREAT_DETECTED"], f"Hysteresis pipeline failed to escalate threat level triggers. State: {second_state}"
     print("\n[+] Verification Unit Tests Passed successfully.")

@@ -60,10 +60,12 @@ class Waterfall:
                     start = i
             text.append("\n")
 
+        # Always emit caret line (fixed line count prevents vertical shake)
+        caret = [" "] * self.width
         if peak_col is not None and 0 <= peak_col < self.width:
-            text.append(" " * peak_col + "^", style="bold white")
+            caret[peak_col] = "^"
+        text.append("".join(caret) + "\n", style="bold white")
         if labels:
             # Place labels under their respective bands
-            # Calculate approximate column for each band label
-            text.append("\n" + " | ".join(labels), style="dim")
+            text.append(" | ".join(labels), style="dim")
         return text

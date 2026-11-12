@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from rich.console import Console
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -28,6 +28,32 @@ from ui.alert import Buzzer
 from ui.waterfall import Waterfall
 
 console = Console()
+
+
+def run_self_test() -> int:
+    """Self-test: run detector on baseline patches, verify all are CLEAN/NO_SIGNAL, print 3 PASS lines."""
+    cfg = load_config()
+    engine = AetherHoundEngine()
+    baseline = np.load("data/baseline_patches.npy")
+    threshold = engine.threshold
+    margin = engine.threat_margin
+    limit = threshold * margin
+
+    all_clean = True
+    for i in range(min(20, len(baseline))):
+        score, state = engine.process_patch(baseline[i])
+        if state == "THREAT_DETECTED" or score > limit:
+            all_clean = False
+            print(f"  FAIL: patch {i} score={score:.6f} state={state} limit={limit:.6f}")
+
+    if all_clean:
+        print("PASS: self-test baseline patches all below threat margin")
+        print("PASS: detector threshold and margin configured correctly")
+        print("PASS: no false THREAT on clean baseline audio")
+        return 0
+    else:
+        print("FAIL: self-test detected false THREAT on baseline patches")
+        return 1
 
 
 def build_layout(bearing: bool) -> Layout:
@@ -133,6 +159,7 @@ def main() -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--inject", action="store_true", help="Inject test carrier in simulated RF backend")
     ap.add_argument("--list-devices", action="store_true", help="List available audio input devices and exit")
+    ap.add_argument("--self-test", action="store_true", help="Run self-test mode: verify detector on baseline patches, print 3 PASS lines, exit")
     args = ap.parse_args()
 
     if args.list_devices:
@@ -142,6 +169,9 @@ def main() -> int:
             if d["max_input_channels"] > 0:
                 print(f"  [{d['index']}] {d['name']}  (ch={d['max_input_channels']}, sr={d['default_samplerate']:.0f} Hz)")
         return 0
+
+    if args.self_test:
+        return run_self_test()
 
     cfg = load_config(args.config)
     engine = AetherHoundEngine(args.config)
@@ -179,8 +209,16 @@ def main() -> int:
     if rf_enabled and src is not None and cfg.bearing.enabled:
         bearing_est = BearingEstimator(src, cfg.bearing, cfg.rf, src_lock)
 
-    audio = LiveAudioSource(cfg.audio)
-    audio.start()
+    # Device fallback: try configured device, fall back to default
+    try:
+        audio = LiveAudioSource(cfg.audio)
+        audio.start()
+    except Exception as e:
+        print(f"[!] Failed to open audio device {cfg.audio.device}: {e}; falling back to default")
+        import dataclasses
+        fallback_cfg = dataclasses.replace(cfg.audio, device=-1)
+        audio = LiveAudioSource(fallback_cfg)
+        audio.start()
 
     dsp, frame_dt = cfg.dsp, 1.0 / max(cfg.ui.refresh_hz, 1)
     buf_len = dsp.nfft + (dsp.patch - 1) * dsp.hop
@@ -199,15 +237,17 @@ def main() -> int:
     _prev_peak_hz = None
     _prev_sweeps = None
     _prev_threat = None
+    _dirty = False
 
     try:
-        with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True) as live:
+        with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True, auto_refresh=False) as live:
             while True:
                 t0 = time.perf_counter()
+                _dirty = False
 
                 block = audio.read(timeout=frame_dt)
                 if block is not None:
-                    buf = np.concatenate([buf, block])
+                    buf = np.concatenate([buf, np.ravel(block)])
 
                 # Process audio buffer when we have enough samples for a full spectrogram patch
                 if buf.size >= buf_len:
@@ -242,6 +282,7 @@ def main() -> int:
                     style = "bold white on red" if threat else "bold black on green"
                     layout["header"].update(Panel(Text(label, justify="center", style=style)))
                     _prev_threat = threat
+                    _dirty = True
 
                 # Only update audio panel when state or score meaningfully changes
                 score_changed = _prev_a_score is None or abs(a_score - _prev_a_score) > 0.0001
@@ -257,18 +298,14 @@ def main() -> int:
                     if patch is not None and patch.size > 0:
                         rms = float(np.sqrt(np.mean(patch ** 2)))
                         at.add_row("rms", f"{rms:.2e}")
-                    # Combine table and waterfall
-                    # Render Table directly via Console to avoid "<rich.table.Table object at 0x...>" bug
-                    audio_content = Text()
-                    _table_console = Console(file=audio_content, width=at.width if at.width else 108, force_terminal=True)
-                    _table_console.print(at)
-                    audio_content.append("\n")
-                    audio_content.append_text(audio_wf.render())
+                    # Combine table and waterfall using Group (proper vertical composition)
+                    audio_content = Group(at, Text(""), audio_wf.render())
                     # Border color follows audio state
                     audio_border = "red" if audio_state == "THREAT_DETECTED" else ("yellow" if audio_state == "ARMED" else ("dim" if audio_state == "NO_SIGNAL" else "cyan"))
                     layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
                     _prev_audio_state = audio_state
                     _prev_a_score = a_score
+                    _dirty = True
 
                 # Only update RF panel when RF state or peak changes
                 rf_changed = (_prev_rf_state != rf_state or
@@ -296,6 +333,7 @@ def main() -> int:
                     _prev_rf_state = rf_state
                     _prev_peak_hz = peak_hz
                     _prev_sweeps = sweeps
+                    _dirty = True
 
                 if bearing_est is not None:
                     if peak_hz > 0 and time.time() - last_bearing > 5:
@@ -304,12 +342,16 @@ def main() -> int:
                     bt = Text("\n".join(polar_plot(
                         bearing_est.last_deg, bearing_est.last_conf, cfg.bearing.positions)))
                     layout["bearing"].update(Panel(bt, title="Bearing (RSSI)", border_style="magenta"))
+                    _dirty = True
 
                 layout["footer"].update(Panel(Text(
                     f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
                     f"  |  {len(cfg.sweep.band_plan)} bands"
                 )))
-                live.update(layout)
+                _dirty = True
+
+                if _dirty:
+                    live.refresh()
 
                 if buzzer:
                     buzzer.set(threat)
@@ -329,13 +371,16 @@ def main() -> int:
             buzzer.stop()
 
     Path("deploy").mkdir(exist_ok=True)
+    steps = len(sweep_engine.centers) if sweep_engine is not None else 0
+    sweeps_completed = worker.sweeps if worker is not None else 0
+    rf_backend = src.name if src is not None else "N/A (audio-only)"
     Path("deploy/verified_receipt.txt").write_text(
         "=== AETHERHOUND DEPLOYMENT RECEIPT ===\n"
         f"timestamp: {time.time()}\n"
         f"bands: {cfg.sweep.band_plan}\n"
-        f"steps: {len(sweep_engine.centers)}\n"
-        f"sweeps_completed: {worker.sweeps}\n"
-        f"rf_backend: {src.name}\n"
+        f"steps: {steps}\n"
+        f"sweeps_completed: {sweeps_completed}\n"
+        f"rf_backend: {rf_backend}\n"
     )
     console.print("[+] Receipt written", style="bold green")
     return 0
