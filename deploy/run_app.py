@@ -69,13 +69,14 @@ class AudioWaterfall:
         # Fixed dB range for stable rendering (no adaptive flicker)
         self._floor_db = -100.0
         self._ceil_db = -20.0
+        # Silence level: map to mid-range color (not black) so panel is visible
+        self._silence_idx = len(self._lut) // 2
     
     def push(self, patch: np.ndarray) -> None:
         """Push a patch (time x freq) and extract a column for the waterfall."""
         if patch is None or patch.size == 0:
-            # Push a silent column when no data (keeps panel from going blank)
-            col_db = np.full(self.width, self._floor_db)
-            self._rows.append(np.zeros(self.width, dtype=np.int8))
+            # Push a mid-level column when no data (keeps panel visible, not black)
+            self._rows.append(np.full(self.width, self._silence_idx, dtype=np.int8))
             if len(self._rows) > self.height:
                 self._rows.pop(0)
             return
@@ -191,6 +192,14 @@ def main() -> int:
     # Build layout ONCE outside the loop to prevent UI flickering
     layout = build_layout(bearing_est is not None)
 
+    # Track previous values to avoid redundant updates (prevents flicker)
+    _prev_audio_state = None
+    _prev_a_score = None
+    _prev_rf_state = None
+    _prev_peak_hz = None
+    _prev_sweeps = None
+    _prev_threat = None
+
     try:
         with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True) as live:
             while True:
@@ -227,50 +236,66 @@ def main() -> int:
                     frame, z, peak_hz, rf_state, sweeps = None, 0.0, 0.0, "DISABLED", 0
                 threat = rf_state == "THREAT_DETECTED" or audio_state == "THREAT_DETECTED"
 
-                label = "THREAT DETECTED" if threat else "CLEAN"
-                style = "bold white on red" if threat else "bold black on green"
-                layout["header"].update(Panel(Text(label, justify="center", style=style)))
+                # Only update header when threat state changes
+                if _prev_threat != threat:
+                    label = "THREAT DETECTED" if threat else "CLEAN"
+                    style = "bold white on red" if threat else "bold black on green"
+                    layout["header"].update(Panel(Text(label, justify="center", style=style)))
+                    _prev_threat = threat
 
-                # Acoustic panel: show audio waterfall + state info
-                at = Table(expand=True, show_header=False)
-                at.add_column(style="cyan")
-                at.add_column(style="magenta")
-                at.add_row("state", audio_state)
-                at.add_row("score", f"{a_score:.6f}")
-                at.add_row("threshold", f"{engine.threshold:.6f}")
-                # Add RMS for debugging
-                if patch is not None and patch.size > 0:
-                    rms = float(np.sqrt(np.mean(patch ** 2)))
-                    at.add_row("rms", f"{rms:.2e}")
-                # Combine table and waterfall
-                # Render Table directly via Console to avoid "<rich.table.Table object at 0x...>" bug
-                audio_content = Text()
-                _table_console = Console(file=audio_content, width=at.width if at.width else 108, force_terminal=True)
-                _table_console.print(at)
-                audio_content.append("\n")
-                audio_content.append_text(audio_wf.render())
-                # Border color follows audio state
-                audio_border = "red" if audio_state == "THREAT_DETECTED" else ("yellow" if audio_state == "ARMED" else ("dim" if audio_state == "NO_SIGNAL" else "cyan"))
-                layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
+                # Only update audio panel when state or score meaningfully changes
+                score_changed = _prev_a_score is None or abs(a_score - _prev_a_score) > 0.0001
+                if _prev_audio_state != audio_state or score_changed:
+                    # Acoustic panel: show audio waterfall + state info
+                    at = Table(expand=True, show_header=False)
+                    at.add_column(style="cyan")
+                    at.add_column(style="magenta")
+                    at.add_row("state", audio_state)
+                    at.add_row("score", f"{a_score:.6f}")
+                    at.add_row("threshold", f"{engine.threshold:.6f}")
+                    # Add RMS for debugging
+                    if patch is not None and patch.size > 0:
+                        rms = float(np.sqrt(np.mean(patch ** 2)))
+                        at.add_row("rms", f"{rms:.2e}")
+                    # Combine table and waterfall
+                    # Render Table directly via Console to avoid "<rich.table.Table object at 0x...>" bug
+                    audio_content = Text()
+                    _table_console = Console(file=audio_content, width=at.width if at.width else 108, force_terminal=True)
+                    _table_console.print(at)
+                    audio_content.append("\n")
+                    audio_content.append_text(audio_wf.render())
+                    # Border color follows audio state
+                    audio_border = "red" if audio_state == "THREAT_DETECTED" else ("yellow" if audio_state == "ARMED" else ("dim" if audio_state == "NO_SIGNAL" else "cyan"))
+                    layout["audio"].update(Panel(audio_content, title="Acoustic", border_style=audio_border))
+                    _prev_audio_state = audio_state
+                    _prev_a_score = a_score
 
-                rf_text = Text()
-                if frame is not None:
-                    span = frame.span_hz
-                    col = int((peak_hz - frame.freqs[0]) / span * wf.width) if span else None
-                    wf.push(frame)
-                    rf_text.append(
-                        f"{peak_hz/1e6:.4f} MHz  z={z:.2f}  sweep #{sweeps}  {rf_state}\n",
-                        style="bold white on red" if rf_state == "THREAT_DETECTED" else "bold white",
+                # Only update RF panel when RF state or peak changes
+                rf_changed = (_prev_rf_state != rf_state or
+                              _prev_peak_hz is None or abs(peak_hz - _prev_peak_hz) > 1000 or
+                              _prev_sweeps != sweeps)
+                if rf_changed:
+                    rf_text = Text()
+                    if frame is not None:
+                        span = frame.span_hz
+                        col = int((peak_hz - frame.freqs[0]) / span * wf.width) if span else None
+                        wf.push(frame)
+                        rf_text.append(
+                            f"{peak_hz/1e6:.4f} MHz  z={z:.2f}  sweep #{sweeps}  {rf_state}\n",
+                            style="bold white on red" if rf_state == "THREAT_DETECTED" else "bold white",
+                        )
+                        rf_text.append_text(wf.render(col, frame.band_names))
+                    else:
+                        rf_text.append("first sweep…", style="dim")
+                    # RF panel border follows RF state, not combined threat
+                    rf_border = "red" if rf_state == "THREAT_DETECTED" else ("yellow" if rf_state == "ARMED" else "blue")
+                    layout["rf"].update(
+                        Panel(rf_text, title="Wideband waterfall",
+                              border_style=rf_border)
                     )
-                    rf_text.append_text(wf.render(col, frame.band_names))
-                else:
-                    rf_text.append("first sweep…", style="dim")
-                # RF panel border follows RF state, not combined threat
-                rf_border = "red" if rf_state == "THREAT_DETECTED" else ("yellow" if rf_state == "ARMED" else "blue")
-                layout["rf"].update(
-                    Panel(rf_text, title="Wideband waterfall",
-                          border_style=rf_border)
-                )
+                    _prev_rf_state = rf_state
+                    _prev_peak_hz = peak_hz
+                    _prev_sweeps = sweeps
 
                 if bearing_est is not None:
                     if peak_hz > 0 and time.time() - last_bearing > 5:

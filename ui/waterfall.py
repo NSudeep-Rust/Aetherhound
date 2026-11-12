@@ -24,10 +24,9 @@ class Waterfall:
         self.ceil = cfg.ceil_db
         self._rows: deque[np.ndarray] = deque(maxlen=cfg.height)
         self._lut = [f"on {c}" for c in RAMP]
-        # For adaptive range
-        self._adaptive_floor = cfg.floor_db
-        self._adaptive_ceil = cfg.ceil_db
-        self._adapt_alpha = 0.05  # Smoothing factor for adaptive range
+        # Fixed dB range for stable rendering (no adaptive flicker / stripes)
+        self._floor_db = cfg.floor_db
+        self._ceil_db = cfg.ceil_db
 
     def _style(self, level: int) -> str:
         return GAP if level < 0 else self._lut[level]
@@ -36,27 +35,14 @@ class Waterfall:
         db = decimate_max(np.asarray(frame.db, dtype=np.float64), self.width)
         v = decimate_max(frame.valid.astype(np.float64), self.width) > 0.5
         
-        # Adaptive dB range: use 5th and 99th percentile of valid bins
-        valid_db = db[v]
-        if valid_db.size > 0:
-            p5 = np.percentile(valid_db, 5)
-            p99 = np.percentile(valid_db, 99)
-            # Smooth the adaptive range
-            self._adaptive_floor = (1 - self._adapt_alpha) * self._adaptive_floor + self._adapt_alpha * p5
-            self._adaptive_ceil = (1 - self._adapt_alpha) * self._adaptive_ceil + self._adapt_alpha * p99
-            # Ensure minimum span
-            if self._adaptive_ceil - self._adaptive_floor < 10:
-                mid = (self._adaptive_ceil + self._adaptive_floor) / 2
-                self._adaptive_floor = mid - 5
-                self._adaptive_ceil = mid + 5
-        
-        span = max(self._adaptive_ceil - self._adaptive_floor, 1e-9)
+        # Fixed dB range mapping (no adaptive range = no vertical stripes)
+        span = max(self._ceil_db - self._floor_db, 1e-9)
         col = np.full(self.width, -200.0)
         ok = np.zeros(self.width, dtype=bool)
         col[v] = db[v]
         ok[v] = True
 
-        norm = np.clip((col - self._adaptive_floor) / span, 0.0, 1.0)
+        norm = np.clip((col - self._floor_db) / span, 0.0, 1.0)
         idx = (norm * (len(self._lut) - 1)).round().astype(np.int8)
         idx[~ok] = -1
         self._rows.append(idx)
