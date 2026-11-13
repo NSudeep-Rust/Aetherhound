@@ -35,11 +35,18 @@ class DspCfg:
 @dataclass
 class DetectCfg:
     threshold_file: str = "models/threshold.txt"
+    tone_threshold_file: str = "models/tone_threshold.txt"
+    tone_min_hz: float = 200.0
+    tone_max_hz: float = 18_000.0
+    tone_window_bins: int = 17
     armed_frames: int = 2
     clear_frames: int = 5
     hold_s: float = 1.5
     clear_ratio: float = 0.7
     silence_rms: float = 1e-6
+    threat_margin: float = 1.25
+    sensor_loss_s: float = 5.0
+    stream_warmup_s: float = 0.05
 
 
 @dataclass
@@ -125,6 +132,12 @@ class Config:
             )
         if self.dsp.nfft % 2:
             raise ValueError("dsp.nfft must be even")
+        if not 0 <= self.detect.tone_min_hz < self.detect.tone_max_hz < nyquist:
+            raise ValueError("tone detection band must be inside the audio Nyquist range")
+        if self.detect.tone_window_bins < 3 or self.detect.tone_window_bins % 2 == 0:
+            raise ValueError("detect.tone_window_bins must be an odd integer >= 3")
+        if self.detect.stream_warmup_s < 0:
+            raise ValueError("detect.stream_warmup_s must not be negative")
         if self.rf.enabled and self.rf.center_hz - self.rf.sample_rate_hz / 2 < 0:
             raise ValueError("rf window extends below 0 Hz")
         if self.rf.peak_search_lo_hz >= self.rf.peak_search_hi_hz:

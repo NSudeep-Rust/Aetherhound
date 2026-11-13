@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -17,22 +18,20 @@ from rich.text import Text
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capture.bearing import BearingEstimator, polar_plot
-from capture.live_audio import LiveAudioSource
+from capture.simulated_audio import SimulatedAudioSource
 from capture.rf_source import open_rf_source
 from capture.sweep import SweepEngine, SweepWorker
 from config_loader import load_config
-from dsp.pipeline import StreamFilter, spectrogram_from_array
+from dsp.streaming import StreamingPatchBuilder
 from infer.detector import AetherHoundEngine
 from infer.rf_detector import RFAnomalyDetector
-from ui.alert import Buzzer
 from ui.waterfall import Waterfall
 
 console = Console()
 
 
 def run_self_test() -> int:
-    """Self-test: run detector on baseline patches, verify all are CLEAN/NO_SIGNAL, print 3 PASS lines."""
-    cfg = load_config()
+    """Check clean and attack fixtures using the same calibrated runtime path."""
     engine = AetherHoundEngine()
     baseline = np.load("data/baseline_patches.npy")
     threshold = engine.threshold
@@ -40,20 +39,29 @@ def run_self_test() -> int:
     limit = threshold * margin
 
     all_clean = True
-    for i in range(min(20, len(baseline))):
+    for i in range(min(128, len(baseline))):
         score, state, _ = engine.process_patch(baseline[i])
-        if state == "THREAT_DETECTED" or score > limit:
+        if (state == "THREAT_DETECTED" or score > limit
+                or (engine.tone_threshold is not None and engine.last_tone_score > engine.tone_threshold)):
             all_clean = False
             print(f"  FAIL: patch {i} score={score:.6f} state={state} limit={limit:.6f}")
 
-    if all_clean:
-        print("PASS: self-test baseline patches all below threat margin")
-        print("PASS: detector threshold and margin configured correctly")
-        print("PASS: no false THREAT on clean baseline audio")
+    attack_engine = AetherHoundEngine()
+    attack = np.load("data/test_patches.npy")
+    attack_states = [attack_engine.process_patch(patch)[1] for patch in attack[:128]]
+    attack_tones = [attack_engine.tone_score(patch)[0] for patch in attack[:128]]
+    attack_detected = "THREAT_DETECTED" in attack_states
+    tone_detected = (attack_engine.tone_threshold is not None
+                     and max(attack_tones, default=0.0) > attack_engine.tone_threshold)
+
+    if all_clean and attack_detected and tone_detected:
+        print("PASS: 128 baseline patches stay below both calibrated guards")
+        print("PASS: saved attack fixture reaches THREAT_DETECTED")
+        print("PASS: tonal guard localises a simulated covert carrier")
         return 0
-    else:
-        print("FAIL: self-test detected false THREAT on baseline patches")
-        return 1
+
+    print("FAIL: self-test did not preserve clean baseline or detect virtual attack")
+    return 1
 
 
 def build_layout(bearing: bool) -> Layout:
@@ -157,9 +165,23 @@ class AudioWaterfall:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
-    ap.add_argument("--inject", action="store_true", help="Inject test carrier in simulated RF backend")
-    ap.add_argument("--list-devices", action="store_true", help="List available audio input devices and exit")
-    ap.add_argument("--self-test", action="store_true", help="Run self-test mode: verify detector on baseline patches, print 3 PASS lines, exit")
+    ap.add_argument("--source", choices=("simulation", "microphone"), default="simulation",
+                    help="Audio input mode (simulation is the hardware-free default)")
+    ap.add_argument("--profile", default="virtual",
+                    help="Calibration profile: virtual (default), room, or a profile JSON path")
+    ap.add_argument("--scenario", choices=("baseline", "attack", "mixed"), default="baseline",
+                    help="Built-in virtual signal used in simulation mode")
+    ap.add_argument("--audio-file", type=Path, default=None,
+                    help="Use this 48 kHz WAV file as the virtual microphone input")
+    ap.add_argument("--duration", type=float, default=None,
+                    help="Stop after this many seconds (useful for a repeatable demo)")
+    ap.add_argument("--no-ui", action="store_true", help="Print state changes instead of opening the live dashboard")
+    ap.add_argument("--simulated-rf", action="store_true", help="Add the virtual RF waterfall; never opens SDR hardware")
+    ap.add_argument("--inject", action="store_true", help="Inject a test carrier into --simulated-rf")
+    ap.add_argument("--buzzer", action="store_true", help="Enable the optional local software alarm tone")
+    ap.add_argument("--write-receipt", action="store_true", help="Write a deployment receipt when the run ends")
+    ap.add_argument("--list-devices", action="store_true", help="List physical audio inputs and exit")
+    ap.add_argument("--self-test", action="store_true", help="Verify the trained detector against saved virtual fixtures")
     args = ap.parse_args()
 
     if args.list_devices:
@@ -173,8 +195,14 @@ def main() -> int:
     if args.self_test:
         return run_self_test()
 
+    if args.duration is not None and args.duration <= 0:
+        ap.error("--duration must be positive")
+
     cfg = load_config(args.config)
-    engine = AetherHoundEngine(args.config)
+    if args.simulated_rf or args.inject:
+        cfg.rf.enabled = True
+        cfg.rf.backend = "simulated"
+    engine = AetherHoundEngine(args.config, profile=args.profile)
     wf = Waterfall(cfg.waterfall)
     # Derive waterfall dB range from RF baseline if available
     bp = Path("models/rf_baseline.npz")
@@ -183,7 +211,13 @@ def main() -> int:
         wf.set_range_from_baseline(float(np.mean(_b["mean_db"])), float(np.mean(_b["std_db"])))
     # Audio waterfall for the acoustic panel
     audio_wf = AudioWaterfall(width=cfg.waterfall.width, height=20, sample_rate=cfg.audio.rate, nfft=cfg.dsp.nfft)
-    buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s) if cfg.ui.buzzer else None
+    if args.buzzer:
+        # Import only when explicitly requested: the virtual workflow must not
+        # touch an operating-system audio device.
+        from ui.alert import Buzzer
+        buzzer = Buzzer(cfg.ui.buzzer_hz, cooldown_s=cfg.ui.buzzer_cooldown_s)
+    else:
+        buzzer = None
 
     rf_enabled = bool(getattr(cfg.rf, "enabled", True))
     baseline_path = Path(getattr(cfg.rf, "baseline_path", "models/rf_baseline.npz"))
@@ -214,22 +248,44 @@ def main() -> int:
     if rf_enabled and src is not None and cfg.bearing.enabled:
         bearing_est = BearingEstimator(src, cfg.bearing, cfg.rf, src_lock)
 
-    # Device fallback: try configured device, fall back to default
-    try:
-        audio = LiveAudioSource(cfg.audio)
+    if args.source == "simulation":
+        if args.audio_file is not None:
+            simulation_paths = [args.audio_file]
+            simulation_label = f"file: {args.audio_file}"
+        elif args.scenario == "baseline":
+            simulation_paths = [Path("data/baseline/normal_room.wav")]
+            simulation_label = "baseline"
+        elif args.scenario == "attack":
+            simulation_paths = [Path("data/test/infected_attack.wav")]
+            simulation_label = "attack"
+        else:
+            simulation_paths = [
+                Path("data/baseline/normal_room.wav"),
+                Path("data/test/infected_attack.wav"),
+            ]
+            simulation_label = "mixed"
+        audio = SimulatedAudioSource(cfg.audio, simulation_paths, loop=True)
         audio.start()
-    except Exception as e:
-        print(f"[!] Failed to open audio device {cfg.audio.device}: {e}; falling back to default")
-        import dataclasses
-        fallback_cfg = dataclasses.replace(cfg.audio, device=-1)
-        audio = LiveAudioSource(fallback_cfg)
-        audio.start()
+        print(f"[+] Virtual audio source: {simulation_label}")
+    else:
+        # Physical microphone support is deliberately opt-in; the standard
+        # project workflow is fully simulated.
+        if args.profile == "virtual":
+            print("[!] Using the virtual profile with a microphone. Normal room sound may false-alert; "
+                  "create a room profile with train/calibrate_room.py first.")
+        from capture.live_audio import LiveAudioSource
+        try:
+            audio = LiveAudioSource(cfg.audio)
+            audio.start()
+        except Exception as e:
+            print(f"[!] Failed to open audio device {cfg.audio.device}: {e}; falling back to default")
+            import dataclasses
+            fallback_cfg = dataclasses.replace(cfg.audio, device=-1)
+            audio = LiveAudioSource(fallback_cfg)
+            audio.start()
 
     dsp, frame_dt = cfg.dsp, 1.0 / max(cfg.ui.refresh_hz, 1)
-    buf_len = dsp.nfft + (dsp.patch - 1) * dsp.hop
-    sfilt = StreamFilter(cfg.audio.rate, cfg.band)
-    fbuf = np.zeros(0, dtype=np.float64)
-    buf = np.zeros(0, dtype=np.float32)
+    patch_builder = StreamingPatchBuilder(cfg.audio, cfg.band, cfg.dsp, cfg.detect)
     audio_state, a_score = "CLEAN", 0.0
     a_anomalous = False
     last_bearing = 0.0
@@ -246,34 +302,30 @@ def main() -> int:
     _prev_threat = None
     _prev_footer_text = None
     _cached_audio_table = None
+    _prev_tone_score = None
+    _prev_headless_state = None
+    started_at = time.monotonic()
 
     try:
-        with Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True, auto_refresh=False) as live:
+        live_context = (Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True, auto_refresh=False)
+                        if not args.no_ui else nullcontext(None))
+        with live_context as live:
             while True:
                 t0 = time.perf_counter()
 
                 block = audio.read(timeout=frame_dt)
+                next_patch = None
                 if block is not None:
-                    block = np.ravel(block).astype(np.float32)
-                    fbuf = np.concatenate([fbuf, sfilt(block)])
+                    next_patch = patch_builder.push(block)
 
-                # Process audio buffer when we have enough samples for a full spectrogram patch
-                if fbuf.size >= buf_len:
-                    chunk = fbuf[-buf_len:].copy()
-                    # Keep overlap: last nfft samples for continuity with next frame
-                    fbuf = fbuf[-dsp.nfft:].copy()
-                    patch = spectrogram_from_array(chunk, cfg.audio.rate, dsp.nfft, dsp.hop)
-                    if patch.shape[0] >= dsp.patch:
-                        patch = patch[:dsp.patch]
-                        a_score, audio_state, a_anomalous = engine.process_patch(patch)
-                        # Push to audio waterfall for visualization (always, even on NO_SIGNAL)
-                        audio_wf.push(patch)
-                    else:
-                        # Not enough frames yet — push empty to keep panel alive
-                        audio_wf.push(None)
-                        a_anomalous = False
+                # Process an audio patch only when the shared streaming assembler
+                # has enough data. The room-calibration command uses this exact
+                # path, so its thresholds match the live dashboard.
+                if next_patch is not None:
+                    patch = next_patch
+                    a_score, audio_state, a_anomalous = engine.process_patch(patch)
+                    audio_wf.push(patch)
                 else:
-                    # Not enough buffer yet — push empty to keep panel alive
                     audio_wf.push(None)
                     a_anomalous = False
 
@@ -302,19 +354,27 @@ def main() -> int:
                     _prev_threat = threat
 
                 # Rebuild audio table only when state changes (stable display, no flicker)
-                if _prev_audio_state != audio_state or _cached_audio_table is None:
+                if (_prev_audio_state != audio_state or _cached_audio_table is None
+                        or _prev_tone_score is None
+                        or abs(engine.last_tone_score - _prev_tone_score) >= 0.25):
                     at = Table(expand=True, show_header=False)
                     at.add_column(style="cyan")
                     at.add_column(style="magenta")
                     at.add_row("state", audio_state)
-                    at.add_row("score", f"{a_score:.6f}")
-                    at.add_row("threshold", f"{engine.threshold:.6f}")
+                    at.add_row("AE score", f"{a_score:.6f}")
+                    at.add_row("AE trip", f"{engine.threshold * engine.threat_margin:.6f}")
+                    at.add_row("tone prominence", f"{engine.last_tone_score:.2f} dB")
+                    at.add_row("tone peak", f"{engine.last_tone_hz:.0f} Hz")
+                    at.add_row("tone trip", (f"{engine.tone_threshold:.2f} dB"
+                                               if engine.tone_threshold is not None else "disabled"))
+                    at.add_row("evidence", engine.last_reason)
                     # Add RMS for debugging
                     if patch is not None and patch.size > 0:
                         rms = float(np.sqrt(np.mean(patch ** 2)))
                         at.add_row("rms", f"{rms:.2e}")
                     _cached_audio_table = at
                     _prev_audio_state = audio_state
+                    _prev_tone_score = engine.last_tone_score
 
                 # Always update audio panel so waterfall scrolls smoothly every frame
                 audio_content = Group(_cached_audio_table, Text(""), audio_wf.render())
@@ -372,10 +432,20 @@ def main() -> int:
                     _prev_footer_text = footer_text
 
                 # Always refresh for smooth waterfall scrolling (no animation when silent)
-                live.refresh()
+                if live is not None:
+                    live.refresh()
+                elif _prev_headless_state != audio_state:
+                    console.print(
+                        f"[{audio_state}] AE={a_score:.6f} | tone={engine.last_tone_score:.2f} dB "
+                        f"@ {engine.last_tone_hz:.0f} Hz | {engine.last_reason}"
+                    )
+                    _prev_headless_state = audio_state
 
                 if buzzer:
                     buzzer.set(a_anomalous or rf_threat)
+
+                if args.duration is not None and time.monotonic() - started_at >= args.duration:
+                    break
 
                 slack = frame_dt - (time.perf_counter() - t0)
                 if slack > 0:
@@ -391,19 +461,23 @@ def main() -> int:
         if buzzer:
             buzzer.stop()
 
-    Path("deploy").mkdir(exist_ok=True)
     steps = len(sweep_engine.centers) if sweep_engine is not None else 0
     sweeps_completed = worker.sweeps if worker is not None else 0
     rf_backend = src.name if src is not None else "N/A (audio-only)"
-    Path("deploy/verified_receipt.txt").write_text(
-        "=== AETHERHOUND DEPLOYMENT RECEIPT ===\n"
-        f"timestamp: {time.time()}\n"
-        f"bands: {cfg.sweep.band_plan}\n"
-        f"steps: {steps}\n"
-        f"sweeps_completed: {sweeps_completed}\n"
-        f"rf_backend: {rf_backend}\n"
-    )
-    console.print("[+] Receipt written", style="bold green")
+    if args.write_receipt:
+        Path("deploy").mkdir(exist_ok=True)
+        Path("deploy/verified_receipt.txt").write_text(
+            "=== AETHERHOUND DEPLOYMENT RECEIPT ===\n"
+            f"timestamp: {time.time()}\n"
+            f"audio_source: {args.source}\n"
+            f"calibration_profile: {engine.profile_name}\n"
+            f"scenario: {args.scenario}\n"
+            f"bands: {cfg.sweep.band_plan}\n"
+            f"steps: {steps}\n"
+            f"sweeps_completed: {sweeps_completed}\n"
+            f"rf_backend: {rf_backend}\n"
+        )
+        console.print("[+] Receipt written", style="bold green")
     return 0
 
 
