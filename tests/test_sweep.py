@@ -15,6 +15,12 @@ def cfg():
     c = Config()
     c.rf.sample_rate_hz, c.rf.nfft = 2.4e6, 2048
     c.sweep.band_plan = PLAN
+    # load_config() syncs rf.band_plan from sweep.band_plan (RFAnomalyDetector
+    # reads rf.band_plan, not sweep.band_plan); replicate that here since this
+    # fixture builds a Config() directly instead of going through load_config().
+    # Without this, RFAnomalyDetector searches the unrelated RFCfg default
+    # band ([[400e6, 470e6]]) and never looks at PLAN's 88-96 MHz band at all.
+    c.rf.band_plan = PLAN
     c.sweep.step_hz = 2e6
     return c
 
@@ -40,7 +46,10 @@ def test_sweep_shape(cfg):
 
 
 def test_detector_localises_carrier(cfg):
-    src = SimulatedBackend(92e6, cfg.rf.sample_rate_hz, carrier_hz=500e3)
+    # carrier_hz is an absolute frequency (not an offset from center) since
+    # the hardening round; put it 500 kHz above the tuned center to keep this
+    # test's original intent.
+    src = SimulatedBackend(92e6, cfg.rf.sample_rate_hz, carrier_hz=92e6 + 500e3)
     eng = SweepEngine(src, cfg.sweep, cfg.rf)
 
     base = eng.sweep_once()
@@ -51,6 +60,13 @@ def test_detector_localises_carrier(cfg):
     det = RFAnomalyDetector(cfg.rf, ":memory:", baseline)
 
     src.inject_carrier = True
+    # The simulated carrier is now a duty-cycled burst (see SimulatedBackend),
+    # and the baseline sweep above already advanced the simulated clock across
+    # every retune. Re-sync to t=0 -- the start of a guaranteed "on" window --
+    # so this localization check doesn't depend on where in the burst cycle
+    # the baseline sweep happened to leave off. Burst-timing robustness itself
+    # is a separate, deeper RF concern (M-of-N confirmation), not this test's job.
+    src.open()
     z, hz, _ = det.score(eng.sweep_once())
     assert z > cfg.rf.z_threshold
     # Carrier is injected at offset from each sweep center, so it appears

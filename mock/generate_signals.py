@@ -46,7 +46,20 @@ def generate_synthetic_data(duration_sec=10, sample_rate=48000, infected=False, 
     return sample_rate, (signal * 32767).astype(np.int16)
 
 def generate_training_dataset(output_dir="data/baseline", num_samples=100, sample_rate=48000, duration_sec=2):
-    """Generate diverse training patches with silence and gain augmentation."""
+    """Generate diverse training patches with silence and gain augmentation.
+
+    This writes a richer, augmented patch set (many short clips across a
+    range of gains, some with silence) to data/baseline_patches_augmented.npy.
+    train/run_training.py does NOT read this file -- it reads
+    data/baseline_patches.npy, produced by dsp/patch_generator.py slicing the
+    single data/baseline/normal_room.wav clip written below. The two used to
+    both target data/baseline_patches.npy (one overwriting the other
+    depending on run order); this set lives at its own path instead so
+    running both no longer silently throws one result away. Switching
+    training onto this augmented set would improve generalization (see the
+    review's detection-quality notes) but is a deliberate, separate change,
+    not a side effect of reproducibility fixes.
+    """
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -88,9 +101,10 @@ def generate_training_dataset(output_dir="data/baseline", num_samples=100, sampl
     
     if all_patches:
         patches_array = np.stack(all_patches)
-        np.save(os.path.join(output_dir, "baseline_patches.npy"), patches_array)
+        out_path = "data/baseline_patches_augmented.npy"
+        np.save(out_path, patches_array)
         print(f"[+] Generated {len(patches_array)} training patches with augmentation")
-        print(f"[+] Saved to {output_dir}/baseline_patches.npy")
+        print(f"[+] Saved to {out_path} (not read by train/run_training.py -- see docstring)")
     
     return all_patches
 

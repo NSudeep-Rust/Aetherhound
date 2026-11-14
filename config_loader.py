@@ -104,7 +104,11 @@ class UICfg:
 class SweepCfg:
     enabled: bool = True
     band_plan: list = field(default_factory=lambda: [[400e6, 470e6]])
-    step_hz: float = 2e6
+    # Must stay <= rf.sample_rate_hz * (1 - 2*edge_guard_fraction) (1.92 MHz at
+    # the RFCfg defaults below) or Config.validate() raises. A bare Config()
+    # with no config.toml -- e.g. in tests -- hits validate() with enabled=True,
+    # so this default has to satisfy that window, not just document it.
+    step_hz: float = 1.9e6
     dwell_ms: float = 15.0
     dc_guard_bins: int = 42
     edge_guard_fraction: float = 0.10

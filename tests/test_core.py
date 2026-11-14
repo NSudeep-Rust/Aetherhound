@@ -37,18 +37,25 @@ def test_inference_engine_state_logic():
     score, state, _ = engine.process_patch(fake_clean_patch)
     assert state == "NO_SIGNAL", "Silent patch should produce NO_SIGNAL state."
     
-    # 2. Use real infected test patch that produces high MSE after per-patch peak normalization
+    # 2. Use a real infected test patch that trips either guard
     test_patches = np.load("data/test_patches.npy")
     limit = engine.threshold * engine.threat_margin
-    # Find a patch that is both above silence gate and anomalous
+    # The attack is a brief keyed tone: the AE alone rarely trips on it (that's
+    # why the tone guard exists -- see infer/detector.process_patch, which
+    # ORs ae_anomalous with tone_anomalous). Search using the same combined
+    # check production uses, not the AE score in isolation.
     fake_malware_patch = None
     for p in test_patches:
-        if float(np.sqrt(np.mean(p ** 2))) >= engine.silence_rms and engine.score(p) > limit:
+        if float(np.sqrt(np.mean(p ** 2))) < engine.silence_rms:
+            continue
+        ae_anomalous = engine.score(p) > limit
+        tone_anomalous = engine.tone_score(p)[0] > engine.tone_threshold
+        if ae_anomalous or tone_anomalous:
             fake_malware_patch = p.astype(np.float32)
             break
     assert fake_malware_patch is not None, "No anomalous test patch found above silence gate"
-    
-    # Drive hysteresis: armed_frames=4 consecutive anomalies needed to reach ARMED
+
+    # Drive hysteresis: armed_frames consecutive anomalies needed to reach ARMED
     for _ in range(engine.armed_limit + 2):
         score, second_state, _ = engine.process_patch(fake_malware_patch)
     

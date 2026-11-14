@@ -23,7 +23,10 @@ def test_spectrum_shape(cfg):
 
 
 def test_carrier_raises_peak(cfg):
-    src = SimulatedBackend(100e6, 2.4e6, carrier_hz=500e3)
+    # carrier_hz is an absolute frequency (not an offset from center) since
+    # the hardening round; put it 500 kHz above the tuned center to keep this
+    # test's original intent.
+    src = SimulatedBackend(100e6, 2.4e6, carrier_hz=100e6 + 500e3)
     quiet = averaged_spectrum([src.read_iq(1 << 16)], cfg.rf.nfft, cfg.rf.sample_rate_hz)
     src.inject_carrier = True
     loud = averaged_spectrum([src.read_iq(1 << 16)], cfg.rf.nfft, cfg.rf.sample_rate_hz)

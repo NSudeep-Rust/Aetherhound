@@ -29,28 +29,63 @@ class RFAnomalyDetector:
         self.state = "CLEAN"
         self.hot = 0
         self.cold = 0
+        # A single long-lived connection, not one per call: sqlite3.connect(
+        # ":memory:") opens a brand-new, unshared in-memory database on every
+        # call, so a connect-per-call pattern silently loses the table created
+        # in _init_db() the moment :memory: is used (as every test here does).
+        # check_same_thread=False because SweepWorker scores frames, and so
+        # logs, on a background thread while this connection is created here
+        # on the caller's thread.
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS rf_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL,
-                    peak_z REAL,
-                    peak_freq_hz REAL,
-                    current_state TEXT
-                )
-            """)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS rf_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL,
+                peak_z REAL,
+                peak_freq_hz REAL,
+                current_state TEXT
+            )
+        """)
+        self._conn.commit()
 
     def _log(self, z: float, freq: float) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO rf_events (timestamp, peak_z, peak_freq_hz, current_state)"
-                " VALUES (?,?,?,?)",
-                (time.time(), float(z), float(freq), self.state),
+        self._conn.execute(
+            "INSERT INTO rf_events (timestamp, peak_z, peak_freq_hz, current_state)"
+            " VALUES (?,?,?,?)",
+            (time.time(), float(z), float(freq), self.state),
+        )
+        self._conn.commit()
+
+    def check_baseline_freshness(self, frame, max_median_z: float = 4.0) -> str | None:
+        """Sanity-check the loaded baseline against one live sweep at startup.
+
+        A placeholder or stale baseline (e.g. a flat -50 dB stub, or one
+        recorded before a hardware/antenna change) makes every live bin look
+        like an outlier, which either floods THREAT_DETECTED on an idle room
+        or silently normalizes out a real attack. Call this once before the
+        detection loop starts; it does not affect scoring.
+        """
+        if frame.db.size != self.mean_db.size:
+            return (
+                f"RF baseline shape mismatch: frame has {frame.db.size} bins, "
+                f"baseline has {self.mean_db.size}. Re-run capture/record_rf.py."
             )
+        mask = frame.valid & self.valid
+        if not mask.any():
+            return "RF baseline shares no valid bins with a live sweep; re-run capture/record_rf.py."
+        z = (frame.db[mask] - self.mean_db[mask]) / self.std_db[mask]
+        median_z = float(np.median(np.abs(z)))
+        if median_z > max_median_z:
+            return (
+                f"RF baseline looks stale: a live sweep's median |z-score| is "
+                f"{median_z:.1f} (expected well under {max_median_z:.0f} on a quiet "
+                "room). Re-run capture/record_rf.py and commit the result."
+            )
+        return None
 
     def score(self, frame) -> tuple[float, float, str]:
         if frame.db.size != self.mean_db.size:

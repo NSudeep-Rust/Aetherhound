@@ -1,4 +1,14 @@
 import os
+import sys
+from pathlib import Path
+
+# Needed to run this file directly (`python dsp/patch_generator.py`): without
+# it, Python puts this file's own directory (dsp/) on sys.path, not the repo
+# root, so `import dsp.pipeline` fails with "No module named 'dsp'".
+# `python -m dsp.patch_generator` doesn't need this since -m already puts the
+# repo root on sys.path, which is why only the direct form was broken.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 from dsp.pipeline import extract_spectrogram
 

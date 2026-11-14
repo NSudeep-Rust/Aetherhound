@@ -231,6 +231,9 @@ def main() -> int:
         src_lock = __import__("threading").Lock()
         det = RFAnomalyDetector(cfg.rf, cfg.log.db)
         sweep_engine = SweepEngine(src, cfg.sweep, cfg.rf, src_lock)
+        warning = det.check_baseline_freshness(sweep_engine.sweep_once())
+        if warning:
+            print(f"[!] {warning}")
         worker = SweepWorker(sweep_engine, det)
         worker.start()
     else:

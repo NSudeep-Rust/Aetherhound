@@ -70,7 +70,10 @@ enabled = false
 # Narrow band plan: focus on 400-470 MHz (UHF) where covert comms are likely
 # Drop 88-108 MHz (FM broadcast) and 2400-2483.5 MHz (WiFi/ISM) to get better waterfall resolution
 band_plan = [[400000000, 470000000]]
-step_hz = 2000000
+# At rf.sample_rate_hz=2.4M and edge_guard_fraction=0.10 the usable window per
+# retune is 2.4M * (1 - 2*0.10) = 1.92M Hz. step_hz must be <= that or
+# Config.validate() raises; 1.9M leaves a small safety margin.
+step_hz = 1900000
 dwell_ms = 15
 # Increase DC guard to 50 kHz (at 1172 Hz/bin with 2.4M/2048 = ~42 bins)
 dc_guard_bins = 42

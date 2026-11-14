@@ -37,6 +37,7 @@ AetherHound/
 ├── deploy/            # Production runner
 │   └── run_app.py           # Virtual dashboard, 30 FPS, waterfall, event log
 ├── tests/             # Pytest validation
+│   ├── conftest.py          # Generates data/ fixtures if missing (fresh-clone bootstrap)
 │   ├── test_core.py         # Audio DSP + state machine
 │   ├── test_rf.py           # RF spectrum + waterfall
 │   ├── test_sweep.py        # Sweep step builder tests
@@ -44,9 +45,11 @@ AetherHound/
 │   └── test_virtual_detection.py # Virtual-source and detection regressions
 ├── mock/              # Synthetic data generator
 │   └── generate_signals.py  # Seeded RNG (deterministic)
+├── tools/
+│   └── bootstrap.sh         # Generates data/ fixtures for a fresh clone (see tests/conftest.py)
 ├── config.toml        # All hyperparameters (now actually parsed)
 ├── config_loader.py   # Typed config loader
-├── requirements.txt   # Python dependencies
+├── requirements.txt   # Runtime dependencies (see also requirements-train.txt, requirements-dev.txt)
 └── models/            # Trained artifacts (tracked via Git LFS)
     ├── autoencoder.pt
     ├── autoencoder.onnx
@@ -65,23 +68,30 @@ pip install -r requirements.txt          # runtime only (no torch/CUDA)
 pip install -r requirements-dev.txt      # add this too if you want to run the tests
 # pip install -r requirements-train.txt  # add this only if you plan to retrain (pulls in torch)
 
-# 2. Verify the supplied trained model and saved virtual fixtures
+# 2. Generate the synthetic audio + patch fixtures. data/ is gitignored (it's
+#    all regenerable from a seeded RNG), so a fresh clone has none of it yet.
+#    `pytest -q` also does this automatically via tests/conftest.py, so this
+#    step is only needed if you want to run steps 4/5 without running pytest first.
+./tools/bootstrap.sh
+
+# 3. Verify the supplied trained model (models/autoencoder.onnx, tracked via
+#    Git LFS) against the fixtures just generated
 python deploy/run_app.py --self-test
 pytest -q
 
-# 3. Open the 30 FPS terminal dashboard on a clean virtual room
+# 4. Open the 30 FPS terminal dashboard on a clean virtual room
 python deploy/run_app.py --scenario baseline
 
-# 4. Run the simulated covert-channel attack
+# 5. Run the simulated covert-channel attack
 python deploy/run_app.py --scenario attack
 
-# 5. A repeatable, text-only demonstration for a report or screen recording
+# 6. A repeatable, text-only demonstration for a report or screen recording
 python deploy/run_app.py --scenario attack --no-ui --duration 5
 
-# 6. Optional: display the fully virtual RF waterfall and injected carrier
+# 7. Optional: display the fully virtual RF waterfall and injected carrier
 python deploy/run_app.py --scenario attack --simulated-rf --inject
 
-# 7. Recalibrate only after replacing the clean baseline fixture
+# 8. Recalibrate only after replacing the clean baseline fixture
 python train/calibrate_threshold.py
 ```
 
