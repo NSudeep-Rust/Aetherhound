@@ -45,6 +45,8 @@ class StreamingPatchBuilder:
             self._dsp_cfg.nfft,
             self._dsp_cfg.hop,
         )
-        if patch.shape[0] < self._dsp_cfg.patch:
-            return None
-        return patch[: self._dsp_cfg.patch]
+        if patch.shape[0] != self._dsp_cfg.patch:
+            raise RuntimeError(
+                f"streaming STFT produced {patch.shape[0]} frames; expected {self._dsp_cfg.patch}"
+            )
+        return patch

@@ -1,0 +1,10 @@
+{
+  "data_path": "data/baseline_patches.npy",
+  "n_patches": 1404,
+  "validation_fraction": 0.2,
+  "seed": 2026,
+  "feature_transform": "log1p_ref_v1",
+  "reference_scale": 0.00190600788073381,
+  "train_count": 1123,
+  "validation_count": 281
+}

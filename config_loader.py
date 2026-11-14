@@ -30,6 +30,7 @@ class DspCfg:
     nfft: int = 512
     hop: int = 32
     patch: int = 64
+    feature_transform: str = "log1p_ref_v1"
 
 
 @dataclass
@@ -40,13 +41,17 @@ class DetectCfg:
     tone_max_hz: float = 18_000.0
     tone_window_bins: int = 17
     armed_frames: int = 2
-    clear_frames: int = 5
+    clear_frames: int = 4
     hold_s: float = 1.5
     clear_ratio: float = 0.7
     silence_rms: float = 1e-6
-    threat_margin: float = 1.25
+    # Calibration writes the operational trip point directly.  Keeping this at
+    # one prevents undocumented, stacked safety factors at inference time.
+    threat_margin: float = 1.0
     sensor_loss_s: float = 5.0
     stream_warmup_s: float = 0.05
+    calibration_quantile: float = 0.99
+    calibration_headroom: float = 1.05
 
 
 @dataclass
@@ -73,6 +78,10 @@ class RFCfg:
     rf_armed_frames: int = 3
     rf_clear_frames: int = 15
     band_plan: list = field(default_factory=lambda: [[400e6, 470e6]])
+    simulated_carrier_hz: float = 433.92e6
+    simulated_burst_period_s: float = 2.0
+    simulated_duty_cycle: float = 0.25
+    simulated_seed: int = 2026
 
 
 @dataclass
@@ -98,6 +107,7 @@ class SweepCfg:
     step_hz: float = 2e6
     dwell_ms: float = 15.0
     dc_guard_bins: int = 42
+    edge_guard_fraction: float = 0.10
 
 
 @dataclass
@@ -138,22 +148,35 @@ class Config:
             raise ValueError("detect.tone_window_bins must be an odd integer >= 3")
         if self.detect.stream_warmup_s < 0:
             raise ValueError("detect.stream_warmup_s must not be negative")
+        if self.detect.armed_frames < 1 or self.detect.clear_frames < 1:
+            raise ValueError("detect frame counts must be positive")
+        if self.detect.hold_s < 0 or not 0 < self.detect.clear_ratio <= 1:
+            raise ValueError("detect hold_s/clear_ratio are invalid")
+        if not 0 < self.detect.calibration_quantile < 1:
+            raise ValueError("detect.calibration_quantile must be in (0, 1)")
+        if self.detect.calibration_headroom < 1:
+            raise ValueError("detect.calibration_headroom must be >= 1")
         if self.rf.enabled and self.rf.center_hz - self.rf.sample_rate_hz / 2 < 0:
             raise ValueError("rf window extends below 0 Hz")
         if self.rf.peak_search_lo_hz >= self.rf.peak_search_hi_hz:
             raise ValueError("rf peak search band inverted")
         if self.sweep.enabled:
-            if self.sweep.step_hz > self.rf.sample_rate_hz:
-                raise ValueError("sweep.step_hz must be <= rf.sample_rate_hz")
+            usable_hz = self.rf.sample_rate_hz * (1 - 2 * self.sweep.edge_guard_fraction)
+            if not 0 <= self.sweep.edge_guard_fraction < 0.5:
+                raise ValueError("sweep.edge_guard_fraction must be in [0, 0.5)")
+            if not 0 < self.sweep.step_hz <= usable_hz:
+                raise ValueError("sweep.step_hz must fit inside the usable RF window")
             for lo, hi in self.sweep.band_plan:
                 if lo >= hi:
                     raise ValueError(f"sweep band inverted: {lo}-{hi}")
 
 
-def _fill(obj, data: dict) -> None:
+def _fill(section: str, obj, data: dict) -> None:
+    unknown = sorted(set(data) - set(obj.__dataclass_fields__))
+    if unknown:
+        raise ValueError(f"unknown config key(s) in [{section}]: {', '.join(unknown)}")
     for key, value in data.items():
-        if hasattr(obj, key):
-            setattr(obj, key, value)
+        setattr(obj, key, value)
 
 
 def load_config(path: str | Path | None = None) -> Config:
@@ -164,8 +187,15 @@ def load_config(path: str | Path | None = None) -> Config:
             raw = tomllib.load(fh)
 
     cfg = Config()
-    for section in ("audio", "band", "dsp", "detect", "log", "rf", "sweep", "bearing", "waterfall", "ui"):
+    sections = ("audio", "band", "dsp", "detect", "log", "rf", "sweep", "bearing", "waterfall", "ui")
+    unknown_sections = sorted(set(raw) - set(sections))
+    if unknown_sections:
+        raise ValueError(f"unknown config section(s): {', '.join(unknown_sections)}")
+    for section in sections:
         if section in raw and isinstance(raw[section], dict):
-            _fill(getattr(cfg, section), raw[section])
+            _fill(section, getattr(cfg, section), raw[section])
+    # Detection and sweep must use one source of truth.  Keeping this assignment
+    # here prevents an RF detector from silently using the dataclass default.
+    cfg.rf.band_plan = [list(band) for band in cfg.sweep.band_plan]
     cfg.validate()
     return cfg

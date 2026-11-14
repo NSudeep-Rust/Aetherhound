@@ -313,21 +313,33 @@ def main() -> int:
             while True:
                 t0 = time.perf_counter()
 
-                block = audio.read(timeout=frame_dt)
-                next_patch = None
-                if block is not None:
+                # Microphone callbacks produce ~47 blocks/s while the UI redraws
+                # at 30 Hz. Drain all queued callback blocks so the DSP never
+                # sees gaps created by a slow display loop.
+                if hasattr(audio, "drain"):
+                    blocks = audio.drain()
+                    if not blocks:
+                        first = audio.read(timeout=frame_dt)
+                        blocks = [first] if first is not None else []
+                else:
+                    first = audio.read(timeout=frame_dt)
+                    blocks = [first] if first is not None else []
+
+                produced_patch = False
+                for block in blocks:
                     next_patch = patch_builder.push(block)
+                    if next_patch is None:
+                        continue
+                    produced_patch = True
+                    patch = next_patch
+                    a_score, audio_state, a_anomalous = engine.process_patch(patch)
+                    audio_wf.push(patch)
 
                 # Process an audio patch only when the shared streaming assembler
                 # has enough data. The room-calibration command uses this exact
                 # path, so its thresholds match the live dashboard.
-                if next_patch is not None:
-                    patch = next_patch
-                    a_score, audio_state, a_anomalous = engine.process_patch(patch)
-                    audio_wf.push(patch)
-                else:
+                if not produced_patch:
                     audio_wf.push(None)
-                    a_anomalous = False
 
                 if worker is not None:
                     frame, z, peak_hz, rf_state, sweeps = worker.snapshot()
@@ -426,6 +438,8 @@ def main() -> int:
                 footer_text = (
                     f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
                     f"  |  {len(cfg.sweep.band_plan)} bands"
+                    f"  |  audio drops {getattr(audio, 'queue_drop_count', 0)}"
+                    f"  |  callback warnings {getattr(audio, 'callback_status_count', 0)}"
                 )
                 if _prev_footer_text != footer_text:
                     layout["footer"].update(Panel(Text(footer_text)))
@@ -442,7 +456,7 @@ def main() -> int:
                     _prev_headless_state = audio_state
 
                 if buzzer:
-                    buzzer.set(a_anomalous or rf_threat)
+                    buzzer.set(audio_threat or rf_threat)
 
                 if args.duration is not None and time.monotonic() - started_at >= args.duration:
                     break
@@ -456,6 +470,7 @@ def main() -> int:
         if worker is not None:
             worker.stop()
         audio.stop()
+        engine.close()
         if src is not None:
             src.close()
         if buzzer:

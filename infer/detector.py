@@ -1,11 +1,55 @@
 import json
 import time
 import sqlite3
+import queue
+import threading
 from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from config_loader import load_config
 from dsp.features import tonal_prominence
+from dsp.normalization import load_reference_scale, normalise_spectrogram
+
+
+class _EventWriter:
+    """Single WAL-backed SQLite writer kept out of the DSP hot path."""
+
+    _STOP = object()
+
+    def __init__(self, db_path: str):
+        self._db_path = db_path
+        self._queue: queue.Queue[tuple | object] = queue.Queue()
+        self._thread = threading.Thread(target=self._run, name="aetherhound-event-writer", daemon=True)
+        self._thread.start()
+
+    def submit(self, event: tuple[float, float, str, str, float | None]) -> None:
+        self._queue.put(event)
+
+    def flush(self) -> None:
+        self._queue.join()
+
+    def close(self) -> None:
+        if self._thread.is_alive():
+            self._queue.put(self._STOP)
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            while True:
+                item = self._queue.get()
+                try:
+                    if item is self._STOP:
+                        return
+                    timestamp, score, state, description, frequency_hz = item
+                    conn.execute(
+                        "INSERT INTO security_events "
+                        "(timestamp, score, current_state, description, frequency_hz) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, score, state, description, frequency_hz),
+                    )
+                    conn.commit()
+                finally:
+                    self._queue.task_done()
 
 
 class AetherHoundEngine:
@@ -24,9 +68,7 @@ class AetherHoundEngine:
                 "missing models/ref_scale.txt; it is required to apply the model's "
                 "training-time normalization"
             )
-        self.reference_scale = float(reference_scale_path.read_text().strip())
-        if self.reference_scale <= 0:
-            raise ValueError("models/ref_scale.txt must contain a positive value")
+        self.reference_scale = load_reference_scale(reference_scale_path)
 
         tone_path = Path(cfg.detect.tone_threshold_file)
         self.tone_threshold = float(tone_path.read_text().strip()) if tone_path.exists() else None
@@ -46,6 +88,8 @@ class AetherHoundEngine:
         self.clear_limit = cfg.detect.clear_frames
         self.threat_margin = float(getattr(cfg.detect, "threat_margin", 1.25))
         self.sensor_loss_s = float(getattr(cfg.detect, "sensor_loss_s", 5.0))
+        self.hold_s = float(cfg.detect.hold_s)
+        self.clear_ratio = float(cfg.detect.clear_ratio)
         
         # Load real-room RMS floor for silence gating (falls back to config value)
         p = Path("models/baseline_rms.txt")
@@ -65,8 +109,12 @@ class AetherHoundEngine:
         self.last_tone_hz = 0.0
         self.last_reason = ""
         self._tone_active = False
+        self._threat_started: float | None = None
+        self._incident_peak_score = 0.0
+        self._incident_peak_hz: float | None = None
         
         self._init_database()
+        self._events = _EventWriter(self.db_path)
         tone_label = f"{self.tone_threshold:.2f} dB" if self.tone_threshold is not None else "disabled"
         print(
             f"[+] Engine Initialized ({self.profile_name} profile). AE trip: {self.threshold * self.threat_margin:.6f} "
@@ -100,34 +148,30 @@ class AetherHoundEngine:
         return str(data.get("name") or path.stem), data
 
     def _init_database(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS security_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL,
-                score REAL,
-                current_state TEXT,
-                description TEXT,
-                frequency_hz REAL
-            )
-        """)
-        columns = {row[1] for row in cursor.execute("PRAGMA table_info(security_events)")}
-        if "frequency_hz" not in columns:
-            cursor.execute("ALTER TABLE security_events ADD COLUMN frequency_hz REAL")
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS security_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    score REAL,
+                    current_state TEXT,
+                    description TEXT,
+                    frequency_hz REAL
+                )
+            """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(security_events)")}
+            if "frequency_hz" not in columns:
+                conn.execute("ALTER TABLE security_events ADD COLUMN frequency_hz REAL")
 
     def log_event(self, score, state, desc, frequency_hz: float | None = None):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO security_events "
-            "(timestamp, score, current_state, description, frequency_hz) VALUES (?, ?, ?, ?, ?)",
-            (time.time(), float(score), state, desc, frequency_hz)
-        )
-        conn.commit()
-        conn.close()
+        self._events.submit((time.time(), float(score), state, desc, frequency_hz))
+
+    def flush_events(self) -> None:
+        self._events.flush()
+
+    def close(self) -> None:
+        self._events.close()
 
     def score(self, patch_matrix):
         """Compute reconstruction MSE using the scale used while training.
@@ -137,8 +181,7 @@ class AetherHoundEngine:
         erased much of a pulsed carrier's amplitude pattern and made deployed
         scores incomparable to calibration scores.
         """
-        norm = np.maximum(np.asarray(patch_matrix, dtype=np.float32), 0.0)
-        norm = norm / self.reference_scale
+        norm = normalise_spectrogram(patch_matrix, self.reference_scale)
         inp = np.expand_dims(norm, axis=0)
         out = self.ort_session.run(None, {self.ort_session.get_inputs()[0].name: inp})[0][0]
         return float(np.mean((norm - out) ** 2))
@@ -152,7 +195,7 @@ class AetherHoundEngine:
         input_name = self.ort_session.get_inputs()[0].name
         for start in range(0, len(values), batch_size):
             raw = np.asarray(values[start : start + batch_size], dtype=np.float32)
-            normalised = np.maximum(raw, 0.0) / self.reference_scale
+            normalised = normalise_spectrogram(raw, self.reference_scale)
             reconstructed = self.ort_session.run(None, {input_name: normalised})[0]
             results.append(np.mean((normalised - reconstructed) ** 2, axis=(1, 2)))
         return np.concatenate(results).astype(np.float64, copy=False)
@@ -172,7 +215,7 @@ class AetherHoundEngine:
         # Silence gate: a dead mic is not an anomaly
         rms = float(np.sqrt(np.mean(patch_matrix ** 2)))
         if rms < self.silence_rms:
-            now = time.time()
+            now = time.monotonic()
             if self._silent_since is None:
                 self._silent_since = now
             self.anomaly_counter = 0
@@ -209,6 +252,7 @@ class AetherHoundEngine:
         
         # 3. Process Hysteresis State Transitions Machine
         old_state = self.state
+        now = time.monotonic()
         
         # If we were in NO_SIGNAL/SENSOR_LOSS and now have signal, reset to CLEAN
         if old_state in ("NO_SIGNAL", "SENSOR_LOSS"):
@@ -223,11 +267,34 @@ class AetherHoundEngine:
                 self.state = "ARMED"
             elif self.state == "ARMED" and self.anomaly_counter >= (self.armed_limit + 1):
                 self.state = "THREAT_DETECTED"
+                self._threat_started = now
+                self._incident_peak_score = mse_score
+                self._incident_peak_hz = tone_hz if tone_anomalous else None
+            elif self.state == "THREAT_DETECTED":
+                self._incident_peak_score = max(self._incident_peak_score, mse_score)
+                if tone_anomalous:
+                    self._incident_peak_hz = tone_hz
         else:
             self.anomaly_counter = 0
-            self.clean_counter += 1
-            if self.state in ["ARMED", "THREAT_DETECTED"] and self.clean_counter >= self.clear_limit:
+            recovered = (
+                mse_score <= self.threshold * self.threat_margin * self.clear_ratio
+                and (self.tone_threshold is None or tone_score <= self.tone_threshold * self.clear_ratio)
+            )
+            self.clean_counter = self.clean_counter + 1 if recovered else 0
+            can_clear = self.clean_counter >= self.clear_limit
+            if self.state == "THREAT_DETECTED" and self._threat_started is not None:
+                can_clear = can_clear and now - self._threat_started >= self.hold_s
+            if self.state in ["ARMED", "THREAT_DETECTED"] and can_clear:
                 self.state = "CLEAN"
+                if old_state == "THREAT_DETECTED":
+                    self.log_event(
+                        self._incident_peak_score,
+                        "INCIDENT_CLOSED",
+                        "Incident closed after clean hold; peak reconstruction score "
+                        f"{self._incident_peak_score:.6f}",
+                        self._incident_peak_hz,
+                    )
+                    self._threat_started = None
                 
         # 4. If system state has transitioned, commit data records to the SQLite database
         # Persist state transitions, not every analysis frame.  This preserves

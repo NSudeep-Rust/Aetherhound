@@ -14,14 +14,9 @@ def power_spectrum_db(iq: np.ndarray, nfft: int, sample_rate: float, window: str
     iq = iq - iq.mean()
     w = signal.get_window(window, nfft)
     segments = iq.size // nfft
-    acc = np.zeros(nfft, dtype=np.float64)
-
-    for i in range(segments):
-        block = iq[i * nfft:(i + 1) * nfft] * w
-        # Use fft for complex input, not rfft
-        acc += np.abs(np.fft.fft(block)) ** 2
-
-    acc /= segments
+    blocks = iq[: segments * nfft].reshape(segments, nfft)
+    # Vectorising the FFT removes one Python call per Welch segment.
+    acc = np.mean(np.abs(np.fft.fft(blocks * w, axis=1)) ** 2, axis=0)
     # For complex FFT, we get nfft bins (not nfft//2+1)
     # Shift so DC is in center, then take positive frequencies
     acc = np.fft.fftshift(acc)

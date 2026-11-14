@@ -38,7 +38,17 @@ def apply_filters(audio: np.ndarray, sample_rate: float, band, zero_phase: bool 
 
 def spectrogram_from_array(audio: np.ndarray, sample_rate: float,
                            nfft: int = 512, hop: int = 32) -> np.ndarray:
-    _, _, spec = signal.stft(audio, fs=sample_rate, nperseg=nfft, noverlap=nfft - hop)
+    # A live patch is already exactly nfft + (frames-1)*hop samples long.
+    # Padding injects artificial zero frames and makes live features differ
+    # from the interior frames used to train the model.
+    _, _, spec = signal.stft(
+        audio,
+        fs=sample_rate,
+        nperseg=nfft,
+        noverlap=nfft - hop,
+        boundary=None,
+        padded=False,
+    )
     return np.abs(spec).T
 
 

@@ -61,7 +61,9 @@ AetherHound/
 # 1. Setup environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt          # runtime only (no torch/CUDA)
+pip install -r requirements-dev.txt      # add this too if you want to run the tests
+# pip install -r requirements-train.txt  # add this only if you plan to retrain (pulls in torch)
 
 # 2. Verify the supplied trained model and saved virtual fixtures
 python deploy/run_app.py --self-test

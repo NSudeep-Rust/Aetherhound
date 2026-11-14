@@ -22,7 +22,7 @@ class RFAnomalyDetector:
             baseline = dict(np.load(path))
 
         self.mean_db = baseline["mean_db"]
-        self.std_db = baseline["std_db"]
+        self.std_db = np.maximum(np.asarray(baseline["std_db"], dtype=np.float64), 0.5)
         self.valid = baseline["valid"].astype(bool)
         self.freqs = baseline["freqs"]
 
@@ -33,6 +33,7 @@ class RFAnomalyDetector:
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rf_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +107,9 @@ class RFAnomalyDetector:
         if anomalous:
             self.cold = 0
             self.hot += 1
-            if self.hot >= self.cfg.rf_armed_frames:
+            if self.state == "CLEAN":
+                self.state = "ARMED"
+            if self.state == "ARMED" and self.hot >= self.cfg.rf_armed_frames:
                 self.state = "THREAT_DETECTED"
         else:
             self.hot = 0
