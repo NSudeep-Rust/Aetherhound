@@ -99,10 +99,8 @@ def test_tonal_channel_event_records_its_frequency(tmp_path):
     config_path.write_text(f'[log]\ndb = "{database_path}"\n')
     engine = AetherHoundEngine(config_path)
     attack = np.load("data/test_patches.npy", mmap_mode="r")
-    patch = next(
-        candidate for candidate in attack
-        if engine.tone_score(candidate)[0] > engine.tone_threshold
-    )
+    patch = max(attack, key=lambda candidate: engine.tone_score(candidate)[0])
+    assert engine.tone_score(patch)[0] > engine.tone_threshold
 
     engine.process_patch(patch)
     # Events are written on a background thread (see infer.detector._EventWriter)
