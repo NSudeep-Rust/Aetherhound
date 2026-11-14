@@ -1,0 +1,42 @@
+# Extra dependencies needed only to retrain the autoencoder and re-export it
+# to ONNX (train/run_training.py, train/calibrate_threshold.py,
+# export/export_onnx.py). Not needed to run deploy/run_app.py -- install
+# requirements.txt alone for that.
+-r requirements.txt
+
+onnx==1.23.2
+torch==2.15.0
+
+# --- torch's own dependency chain ---
+cloudpickle==3.1.2
+filelock==4.2.9
+fsspec==2026.9.0
+ml_dtypes==0.6.0
+mpmath==1.3.0
+networkx==3.7
+platformdirs==4.14.5
+sympy==1.14.0
+
+# --- optional GPU acceleration ---
+# The autoencoder in train/model.py is a small conv net; CPU training is
+# fine (minutes, not hours). Only install the block below if you have an
+# NVIDIA GPU and want faster epochs -- it's several GB by itself.
+triton==3.9.0
+cuda-bindings==13.5.0
+cuda-pathfinder==1.8.6
+cuda-toolkit==13.2.2
+nvidia-cublas==13.4.1.3
+nvidia-cuda-cccl==13.3.5.0.6
+nvidia-cuda-cupti==13.2.86
+nvidia-cuda-nvrtc==13.2.86
+nvidia-cuda-runtime==13.2.86
+nvidia-cudnn-cu13==9.26.0.51
+nvidia-cufft==12.2.0.57
+nvidia-cufile==1.17.1.22
+nvidia-cusolver==12.2.0.11
+nvidia-cusparse==12.7.10.12
+nvidia-cusparselt-cu13==0.8.1
+nvidia-nccl-cu13==2.30.7
+nvidia-nvjitlink==13.5.37
+nvidia-nvshmem-cu13==3.7.2
+nvidia-nvtx==13.2.86

@@ -1,0 +1,14 @@
+{
+  "format": "aetherhound-room-profile-v1",
+  "name": "room",
+  "created_at": "2026-11-12T12:01:55Z",
+  "sample_rate": 48000,
+  "nfft": 512,
+  "patches": 1053,
+  "ae_trip": 12.541760873794555,
+  "tone_trip_db": 24.144100226986378,
+  "silence_rms": 0.00017911644541322854,
+  "baseline_ae_max": 10.905879020690918,
+  "baseline_tone_max_db": 20.994869762596853,
+  "source": "microphone"
+}

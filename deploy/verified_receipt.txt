@@ -1,6 +1,6 @@
 === AETHERHOUND DEPLOYMENT RECEIPT ===
-timestamp: 1794475681.6332648
+timestamp: 1794481264.8850486
 bands: [[400000000, 470000000]]
-steps: 30
-sweeps_completed: 164
-rf_backend: simulated
+steps: 0
+sweeps_completed: 0
+rf_backend: N/A (audio-only)

@@ -2,36 +2,33 @@ import torch
 import torch.nn as nn
 
 class AudioAutoencoder(nn.Module):
+    """Compact convolutional autoencoder for 64 x 257 log spectrograms."""
+
     def __init__(self):
         super(AudioAutoencoder, self).__init__()
-        
-        # 1. The Encoder Network (Compressor)
+        # Strided convolutions preserve local time/frequency structure and are
+        # much smaller than a dense 16k-input autoencoder.
         self.encoder = nn.Sequential(
-            nn.Flatten(),                  # Flatten 64x257 matrix to a 16448 single vector
-            nn.Linear(64 * 257, 512),       # Compress down to 512 parameters
+            nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Linear(512, 64),            # Compress down to 64 parameters (Bottleneck latent space)
-            nn.ReLU()
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 48, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
         )
-        
-        # 2. The Decoder Network (Decompressor)
         self.decoder = nn.Sequential(
-            nn.Linear(64, 512),            # Decompress back to 512 parameters
+            nn.ConvTranspose2d(48, 32, kernel_size=3, stride=2, padding=1, output_padding=(1, 0)),
             nn.ReLU(),
-            nn.Linear(512, 64 * 257),      # Expand back to original 16448 size
-            nn.Sigmoid()                   # Bounds outputs to a clean 0.0 - 1.0 range
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=(1, 0)),
+            nn.ReLU(),
+            nn.ConvTranspose2d(16, 1, kernel_size=3, stride=2, padding=1, output_padding=(1, 0)),
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
-        # Flatten batch inputs if they are passed as raw 2D frames
-        original_shape = x.shape
-        
-        # Encode and then decode
-        latent = self.encoder(x)
-        reconstructed_flat = self.decoder(latent)
-        
-        # Reshape the output vector perfectly back to the original input shape layout
-        return reconstructed_flat.view(original_shape)
+        if x.ndim != 3 or tuple(x.shape[-2:]) != (64, 257):
+            raise ValueError(f"expected [batch, 64, 257], got {tuple(x.shape)}")
+        return self.decoder(self.encoder(x.unsqueeze(1))).squeeze(1)
 
 if __name__ == "__main__":
     print("[*] Instantiating PyTorch Audio Autoencoder model structural check...")

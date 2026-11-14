@@ -39,20 +39,33 @@ def build_axis(band_plan, sample_rate: float, nfft: int) -> tuple[np.ndarray, np
     return freqs, valid
 
 
-def build_steps(band_plan, sample_rate: float) -> list[float]:
-    half = sample_rate / 2
+def build_steps(
+    band_plan,
+    sample_rate: float,
+    step_hz: float | None = None,
+    edge_guard_fraction: float = 0.10,
+) -> list[float]:
+    """Return retune centres with contiguous coverage inside usable windows."""
+    usable = sample_rate * (1 - 2 * edge_guard_fraction)
+    if not 0 < usable <= sample_rate:
+        raise ValueError("edge_guard_fraction leaves no usable RF window")
+    stride = min(float(step_hz if step_hz is not None else usable), usable)
+    if stride <= 0:
+        raise ValueError("step_hz must be positive")
     centers: list[float] = []
     for lo, hi in band_plan:
-        if hi - lo <= sample_rate:
+        span = hi - lo
+        if span <= usable:
             centers.append((lo + hi) / 2)
             continue
-        c = lo + half
-        while c < hi - half:
+        c = lo + usable / 2
+        final = hi - usable / 2
+        while c < final:
             centers.append(c)
-            c += sample_rate
+            c += stride
         # Always cover the top edge of the band
-        if not centers or centers[-1] < hi - half:
-            centers.append(hi - half)
+        if not centers or centers[-1] < final:
+            centers.append(final)
     return centers
 
 
@@ -66,8 +79,14 @@ class SweepEngine:
         self.freqs, self.valid = build_axis(
             sweep_cfg.band_plan, rf_cfg.sample_rate_hz, rf_cfg.nfft
         )
-        self.centers = build_steps(sweep_cfg.band_plan, rf_cfg.sample_rate_hz)
+        self.centers = build_steps(
+            sweep_cfg.band_plan,
+            rf_cfg.sample_rate_hz,
+            sweep_cfg.step_hz,
+            sweep_cfg.edge_guard_fraction,
+        )
         self.guard = max(0, sweep_cfg.dc_guard_bins)
+        self.edge_bins = int(np.ceil(rf_cfg.nfft * sweep_cfg.edge_guard_fraction))
 
     def sweep_once(self) -> SweepFrame:
         acc = np.full(self.freqs.size, -200.0)
@@ -85,17 +104,21 @@ class SweepEngine:
                 ]
                 seg = averaged_spectrum(frames, self.rf.nfft, self.rf.sample_rate_hz)
 
-                start = center - half
+                # Discard unreliable FFT window edges.  Retunes overlap by
+                # construction, so valid interior regions still cover the band.
+                edge = min(self.edge_bins, max(0, seg.size // 2 - 1))
+                retained = seg[edge : seg.size - edge] if edge else seg
+                start = center - half + edge * self.width
                 i0 = int(round((start - lo) / self.width))
-                i1 = i0 + seg.size
+                i1 = i0 + retained.size
                 a, b = max(i0, 0), min(i1, self.freqs.size)
                 if b <= a:
                     continue
                 sa, sb = a - i0, b - i0
-                acc[a:b] = np.maximum(acc[a:b], seg[sa:sb])
+                acc[a:b] = np.maximum(acc[a:b], retained[sa:sb])
                 seen[a:b] = True
 
-                dc = i0 + seg.size // 2
+                dc = int(round((center - lo) / self.width))
                 g0, g1 = max(dc - self.guard, 0), min(dc + self.guard + 1, self.freqs.size)
                 if g1 > g0:
                     seen[g0:g1] = False
@@ -112,7 +135,7 @@ class SweepWorker(threading.Thread):
         super().__init__(daemon=True)
         self.engine = engine
         self.detector = detector
-        self._stop = threading.Event()
+        self._halt = threading.Event()
         self._lock = threading.Lock()
         self.frame: SweepFrame | None = None
         self.z = 0.0
@@ -121,7 +144,7 @@ class SweepWorker(threading.Thread):
         self.sweeps = 0
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             try:
                 frame = self.engine.sweep_once()
                 z, peak_hz, state = self.detector.score(frame)
@@ -138,4 +161,4 @@ class SweepWorker(threading.Thread):
             return self.frame, self.z, self.peak_hz, self.state, self.sweeps
 
     def stop(self) -> None:
-        self._stop.set()
+        self._halt.set()

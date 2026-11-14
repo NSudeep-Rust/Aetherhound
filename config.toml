@@ -1,9 +1,7 @@
 [audio]
-# Virtual audio device setup (PipeWire/PulseAudio):
-#   pactl load-module module-null-sink sink_name=virtual_mic sink_properties=device.description="Virtual_Mic"
-#   pactl set-default-source virtual_mic.monitor
-# Then run: python deploy/run_app.py --list-devices  to find the index, or set device=6 for pulse backend
-device = 4             # 4 = HD-Audio Generic ALC295 Analog (real microphone); -1 = system default
+# The default runner is WAV-backed simulation. This value is read only when
+# --source microphone is explicitly requested.
+device = -1
 rate = 48000
 blocksize = 1024
 channels = 1
@@ -19,23 +17,34 @@ notch_q = 30.0
 nfft = 512
 hop = 32
 patch = 64
+feature_transform = "log1p_ref_v1"
 
 [detect]
 threshold_file = "models/threshold.txt"
-armed_frames = 1
-clear_frames = 1
-hold_s = 0.5
+# The calibrated narrow-band guard complements the autoencoder.  It is
+# level-invariant, so virtual microphone gain cannot hide a pulsed carrier.
+tone_threshold_file = "models/tone_threshold.txt"
+tone_min_hz = 200
+tone_max_hz = 18000
+tone_window_bins = 17
+armed_frames = 2
+clear_frames = 4
+hold_s = 1.5
 clear_ratio = 0.7
 silence_rms = 1e-6
-threat_margin = 1.25
+threat_margin = 1.0
 sensor_loss_s = 5.0
+# Do not score the first filter-settling blocks from a newly opened source.
+stream_warmup_s = 0.05
+calibration_quantile = 0.99
+calibration_headroom = 1.05
 
 [log]
 db = "events.db"
 
 [rf]
 enabled = false
-backend = "auto"                 # auto | rtlsdr | hackrf | simulated
+backend = "simulated"            # the software-only demo never opens SDR hardware
 device_index = 0
 center_hz = 100000000
 sample_rate_hz = 2400000
@@ -51,6 +60,10 @@ peak_search_lo_hz = 300000
 peak_search_hi_hz = 800000
 rf_armed_frames = 3
 rf_clear_frames = 15
+simulated_carrier_hz = 433920000
+simulated_burst_period_s = 2.0
+simulated_duty_cycle = 0.25
+simulated_seed = 2026
 
 [sweep]
 enabled = false
@@ -61,6 +74,7 @@ step_hz = 2000000
 dwell_ms = 15
 # Increase DC guard to 50 kHz (at 1172 Hz/bin with 2.4M/2048 = ~42 bins)
 dc_guard_bins = 42
+edge_guard_fraction = 0.10
 
 [bearing]
 enabled = false
