@@ -27,6 +27,14 @@ tone_threshold_file = "models/tone_threshold.txt"
 tone_min_hz = 200
 tone_max_hz = 18000
 tone_window_bins = 17
+# A tone only arms the guard once it toggles on/off at least
+# tone_keying_min_bursts times within the trailing tone_keying_window_patches
+# patches, at a frequency stable to within tone_keying_freq_tolerance_hz.
+# This tells a keyed covert carrier apart from steady fan/mains hum and
+# isolated noise blips, both of which only ever produce a single burst.
+tone_keying_window_patches = 150
+tone_keying_min_bursts = 2
+tone_keying_freq_tolerance_hz = 200.0
 armed_frames = 2
 clear_frames = 4
 hold_s = 1.5
@@ -58,7 +66,12 @@ min_bins_over = 3
 # peak_search_lo_hz and peak_search_hi_hz are now deprecated; per-band search uses sweep.band_plan
 peak_search_lo_hz = 300000
 peak_search_hi_hz = 800000
+# M-of-N confirmation: arm THREAT_DETECTED once rf_armed_frames hits land
+# within the last rf_window_frames sweeps, rather than requiring them
+# consecutively -- a bursty/duty-cycled carrier is not guaranteed to show up
+# on every sweep.
 rf_armed_frames = 3
+rf_window_frames = 10
 rf_clear_frames = 15
 simulated_carrier_hz = 433920000
 simulated_burst_period_s = 2.0

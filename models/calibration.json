@@ -1,8 +1,8 @@
 {
   "source": "held_out_baseline_split",
-  "validation_count": 281,
+  "validation_count": 3680,
   "quantile": 0.99,
   "headroom": 1.05,
-  "ae_trip": 0.008665630957111717,
-  "tone_trip_db": 6.149772034997012
+  "ae_trip": 0.009236449216492477,
+  "tone_trip_db": 5.785126874235688
 }

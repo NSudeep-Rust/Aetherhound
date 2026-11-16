@@ -15,7 +15,7 @@ from config_loader import load_config
 from dsp.features import tonal_prominence
 from dsp.normalization import FEATURE_TRANSFORM, load_reference_scale, normalise_spectrogram
 from train.model import AudioAutoencoder
-from train.run_training import split_indices
+from train.run_training import split_indices, split_indices_by_group
 
 
 def _scores(model: AudioAutoencoder, patches: np.ndarray, reference_scale: float) -> np.ndarray:
@@ -55,10 +55,23 @@ def calibrate_and_validate() -> None:
 
     model = AudioAutoencoder()
     model.load_state_dict(torch.load("models/autoencoder.pt", map_location="cpu", weights_only=True))
-    baseline_data = np.load("data/baseline_patches.npy")
-    _, validation_indices = split_indices(
-        len(baseline_data), float(manifest["validation_fraction"]), int(manifest["seed"])
-    )
+    # Read back whichever file run_training.py actually trained on (recorded
+    # in the manifest) rather than hardcoding data/baseline_patches.npy --
+    # that used to silently diverge the moment training switched datasets,
+    # since this would then reconstruct a "held-out" split over a dataset the
+    # model never even saw.
+    baseline_data = np.load(manifest["data_path"])
+    split_seed = int(manifest.get("split_seed", manifest["seed"]))
+    groups_path = manifest.get("groups_path")
+    if groups_path:
+        groups = np.load(groups_path)
+        _, validation_indices = split_indices_by_group(
+            groups, float(manifest["validation_fraction"]), split_seed
+        )
+    else:
+        _, validation_indices = split_indices(
+            len(baseline_data), float(manifest["validation_fraction"]), split_seed
+        )
     validation_data = baseline_data[validation_indices]
 
     baseline_errors = _scores(model, validation_data, reference_scale)

@@ -40,6 +40,15 @@ class DetectCfg:
     tone_min_hz: float = 200.0
     tone_max_hz: float = 18_000.0
     tone_window_bins: int = 17
+    # A tone only arms the guard once it has toggled on/off at least
+    # tone_keying_min_bursts times within the last tone_keying_window_patches
+    # patches, at a frequency stable to within tone_keying_freq_tolerance_hz.
+    # This is what tells a keyed covert carrier apart from a steady tone
+    # (fan hum, a missed mains harmonic) or an isolated noise blip, both of
+    # which only ever produce a single burst. See dsp/keying.py.
+    tone_keying_window_patches: int = 150
+    tone_keying_min_bursts: int = 2
+    tone_keying_freq_tolerance_hz: float = 200.0
     armed_frames: int = 2
     clear_frames: int = 4
     hold_s: float = 1.5
@@ -75,7 +84,13 @@ class RFCfg:
     min_bins_over: int = 3
     peak_search_lo_hz: float = 300e3
     peak_search_hi_hz: float = 800e3
+    # M-of-N confirmation: arm THREAT_DETECTED once rf_armed_frames hits land
+    # within the last rf_window_frames sweeps, rather than requiring them to
+    # be consecutive. A duty-cycled/bursty carrier is not guaranteed to show
+    # up on every sweep, so a strict "N in a row" rule can leave it stuck in
+    # ARMED forever; counting hits within a trailing window does not.
     rf_armed_frames: int = 3
+    rf_window_frames: int = 10
     rf_clear_frames: int = 15
     band_plan: list = field(default_factory=lambda: [[400e6, 470e6]])
     simulated_carrier_hz: float = 433.92e6
@@ -150,6 +165,12 @@ class Config:
             raise ValueError("tone detection band must be inside the audio Nyquist range")
         if self.detect.tone_window_bins < 3 or self.detect.tone_window_bins % 2 == 0:
             raise ValueError("detect.tone_window_bins must be an odd integer >= 3")
+        if self.detect.tone_keying_window_patches < 2:
+            raise ValueError("detect.tone_keying_window_patches must be at least 2")
+        if self.detect.tone_keying_min_bursts < 2:
+            raise ValueError("detect.tone_keying_min_bursts must be at least 2 (a single burst never proves toggling)")
+        if self.detect.tone_keying_freq_tolerance_hz < 0:
+            raise ValueError("detect.tone_keying_freq_tolerance_hz must not be negative")
         if self.detect.stream_warmup_s < 0:
             raise ValueError("detect.stream_warmup_s must not be negative")
         if self.detect.armed_frames < 1 or self.detect.clear_frames < 1:
@@ -164,6 +185,10 @@ class Config:
             raise ValueError("rf window extends below 0 Hz")
         if self.rf.peak_search_lo_hz >= self.rf.peak_search_hi_hz:
             raise ValueError("rf peak search band inverted")
+        if self.rf.rf_armed_frames < 1:
+            raise ValueError("rf.rf_armed_frames must be positive")
+        if self.rf.rf_window_frames < self.rf.rf_armed_frames:
+            raise ValueError("rf.rf_window_frames must be >= rf.rf_armed_frames")
         if self.sweep.enabled:
             usable_hz = self.rf.sample_rate_hz * (1 - 2 * self.sweep.edge_guard_fraction)
             if not 0 <= self.sweep.edge_guard_fraction < 0.5:

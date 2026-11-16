@@ -19,13 +19,73 @@ from train.model import AudioAutoencoder
 
 
 def split_indices(n: int, validation_fraction: float = 0.2, seed: int = 2026) -> tuple[np.ndarray, np.ndarray]:
-    """Return reproducible training and held-out validation indices."""
+    """Return reproducible training and held-out validation indices.
+
+    This splits by individual patch, so it is only independent when patches
+    do not overlap/duplicate across the split (e.g. a single short clip
+    sliced with a 50%-overlap window does NOT satisfy that -- use
+    split_indices_by_group for data generated that way, see
+    mock/generate_signals.py).
+    """
     if n < 10:
         raise ValueError("need at least 10 baseline patches for a train/validation split")
     rng = np.random.default_rng(seed)
     order = rng.permutation(n)
     validation_count = max(1, int(round(n * validation_fraction)))
     return order[validation_count:], order[:validation_count]
+
+
+def split_indices_by_group(
+    groups: np.ndarray, validation_fraction: float = 0.2, seed: int = 7
+) -> tuple[np.ndarray, np.ndarray]:
+    """Hold out whole recordings, not individual (likely correlated) patches.
+
+    mock/generate_signals.py slices each synthetic clip with a 50%-overlap
+    sliding window, so neighbouring patches from the same recording are
+    near-duplicates of each other. Shuffling individual patches (as
+    split_indices does) therefore leaks near-duplicates of validation
+    patches into training, and vice versa -- the held-out set is not
+    actually independent. Shuffling whole recordings instead means the
+    model never saw anything from a validation recording.
+
+    ``seed`` here is deliberately a parameter separate from the model's
+    torch.manual_seed: it controls which recordings get held out, not how
+    the network's weights are initialised, so re-running with a different
+    model seed doesn't silently also reshuffle the validation split (or vice
+    versa).
+    """
+    groups = np.asarray(groups)
+    unique_groups = np.unique(groups)
+    if len(unique_groups) < 2:
+        raise ValueError(
+            "need at least 2 distinct recordings to hold out a whole one for validation"
+        )
+    rng = np.random.default_rng(seed)
+    shuffled_groups = unique_groups[rng.permutation(len(unique_groups))]
+    counts = {g: int(np.count_nonzero(groups == g)) for g in unique_groups}
+    target_validation = max(1, int(round(len(groups) * validation_fraction)))
+
+    validation_groups: list = []
+    running_total = 0
+    for g in shuffled_groups:
+        if running_total >= target_validation:
+            break
+        validation_groups.append(g)
+        running_total += counts[g]
+
+    validation_mask = np.isin(groups, validation_groups)
+    train_indices = np.flatnonzero(~validation_mask)
+    validation_indices = np.flatnonzero(validation_mask)
+    if len(train_indices) == 0 or len(validation_indices) == 0:
+        raise ValueError("group split produced an empty train or validation set")
+    return train_indices, validation_indices
+
+
+def _discover_groups_path(data_path: str) -> Path | None:
+    """Return the per-patch recording-id file next to ``data_path``, if any."""
+    data_path = Path(data_path)
+    candidate = data_path.with_name(data_path.stem + "_groups.npy")
+    return candidate if candidate.exists() else None
 
 
 def train_model(
@@ -36,10 +96,34 @@ def train_model(
     ref_scale_path: str = "models/ref_scale.txt",
     validation_fraction: float = 0.2,
     seed: int = 2026,
+    split_seed: int = 7,
+    groups_path: str | Path | None = None,
 ) -> None:
     torch.manual_seed(seed)
     raw_data = np.load(data_path)
-    train_indices, validation_indices = split_indices(len(raw_data), validation_fraction, seed)
+
+    if groups_path is None:
+        groups_path = _discover_groups_path(data_path)
+    n_recordings: int | None = None
+    if groups_path is not None:
+        groups = np.load(groups_path)
+        if len(groups) != len(raw_data):
+            raise ValueError(
+                f"{groups_path} has {len(groups)} entries but {data_path} has {len(raw_data)} patches"
+            )
+        train_indices, validation_indices = split_indices_by_group(groups, validation_fraction, split_seed)
+        n_recordings = int(len(np.unique(groups)))
+        print(
+            f"[+] Holding out whole recordings for validation "
+            f"({n_recordings} recordings total, split_seed={split_seed})"
+        )
+    else:
+        print(
+            "[!] No recording-id file found next to the training data "
+            f"({data_path}); falling back to a per-patch split, which is "
+            "only independent if patches never overlap within a recording."
+        )
+        train_indices, validation_indices = split_indices(len(raw_data), validation_fraction, split_seed)
     train_raw = raw_data[train_indices]
     validation_raw = raw_data[validation_indices]
 
@@ -78,9 +162,12 @@ def train_model(
     torch.save(model.state_dict(), model_save_path)
     Path("models/training_manifest.json").write_text(json.dumps({
         "data_path": str(data_path),
+        "groups_path": str(groups_path) if groups_path is not None else None,
         "n_patches": int(len(raw_data)),
+        "n_recordings": n_recordings,
         "validation_fraction": validation_fraction,
         "seed": seed,
+        "split_seed": split_seed,
         "feature_transform": FEATURE_TRANSFORM,
         "reference_scale": ref_scale,
         "train_count": int(len(train_indices)),
@@ -90,4 +177,11 @@ def train_model(
 
 
 if __name__ == "__main__":
-    train_model("data/baseline_patches.npy", "models/autoencoder.pt")
+    # The augmented set (mock/generate_signals.py) covers the x0.2-x5.0 gain
+    # range that a louder/quieter room needs at inference time, and carries a
+    # data/baseline_patches_augmented_groups.npy file alongside it for an
+    # independent held-out split (see split_indices_by_group above). The
+    # single-clip data/baseline_patches.npy remains in use elsewhere
+    # (calibration's before/after sanity checks, tests) as an unrelated
+    # real-world sample.
+    train_model("data/baseline_patches_augmented.npy", "models/autoencoder.pt")

@@ -8,6 +8,7 @@ import numpy as np
 import onnxruntime as ort
 from config_loader import load_config
 from dsp.features import tonal_prominence
+from dsp.keying import KeyingDetector
 from dsp.normalization import load_reference_scale, normalise_spectrogram
 
 
@@ -75,6 +76,15 @@ class AetherHoundEngine:
         self.tone_min_hz = float(cfg.detect.tone_min_hz)
         self.tone_max_hz = float(cfg.detect.tone_max_hz)
         self.tone_window_bins = int(cfg.detect.tone_window_bins)
+        # Flags a tone only once it has toggled on/off a few times, not just
+        # because it is loud -- see dsp/keying.py for why (steady hum and
+        # isolated noise blips both look identical to a one-shot threshold
+        # crossing, but neither ever produces a second burst).
+        self._keying = KeyingDetector(
+            window_patches=int(cfg.detect.tone_keying_window_patches),
+            min_bursts=int(cfg.detect.tone_keying_min_bursts),
+            freq_tolerance_hz=float(cfg.detect.tone_keying_freq_tolerance_hz),
+        )
         self.profile_name, profile_data = self._load_profile(profile, cfg)
         if profile_data is not None:
             # A room profile stores operational trip points rather than a
@@ -224,6 +234,9 @@ class AetherHoundEngine:
             self.last_tone_hz = 0.0
             self.last_reason = "no signal"
             self._tone_active = False
+            # A genuine silence gap breaks continuity: bursts seen before and
+            # after it are not evidence of the same channel toggling.
+            self._keying.reset()
             old_state = self.state
             self.state = ("SENSOR_LOSS"
                           if now - self._silent_since >= self.sensor_loss_s
@@ -237,7 +250,15 @@ class AetherHoundEngine:
         mse_score = self.score(patch_matrix)
         tone_score, tone_hz = self.tone_score(patch_matrix)
         ae_anomalous = mse_score > (self.threshold * self.threat_margin)
-        tone_anomalous = self.tone_threshold is not None and tone_score > self.tone_threshold
+        tone_present = self.tone_threshold is not None and tone_score > self.tone_threshold
+        if self.tone_threshold is not None:
+            tone_anomalous, keyed_hz = self._keying.update(tone_present, tone_hz)
+            if keyed_hz is not None:
+                # Report the toggling channel's frequency, not just this
+                # one patch's peak bin.
+                tone_hz = keyed_hz
+        else:
+            tone_anomalous = False
         tone_started = tone_anomalous and not self._tone_active
         self._tone_active = bool(tone_anomalous)
         is_anomalous = ae_anomalous or tone_anomalous

@@ -1,8 +1,12 @@
 """Regression checks for the hardware-free acoustic detection path."""
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
+
 import numpy as np
+import pytest
 
 from capture.simulated_audio import SimulatedAudioSource
 from config_loader import load_config
@@ -99,10 +103,23 @@ def test_tonal_channel_event_records_its_frequency(tmp_path):
     config_path.write_text(f'[log]\ndb = "{database_path}"\n')
     engine = AetherHoundEngine(config_path)
     attack = np.load("data/test_patches.npy", mmap_mode="r")
-    patch = max(attack, key=lambda candidate: engine.tone_score(candidate)[0])
-    assert engine.tone_score(patch)[0] > engine.tone_threshold
+    baseline = np.load("data/baseline_patches.npy", mmap_mode="r")
+    carrier_patch = max(attack, key=lambda candidate: engine.tone_score(candidate)[0])
+    assert engine.tone_score(carrier_patch)[0] > engine.tone_threshold
 
-    engine.process_patch(patch)
+    # The tone guard now only arms once a tone has toggled on/off a couple of
+    # times (see dsp/keying.py) instead of on a single patch over the trip,
+    # so a lone process_patch() call is no longer enough to trip it. Simulate
+    # real keying instead: a quiet baseline patch between two carrier
+    # patches gives the guard its first confirmed on/off/on cycle.
+    quiet_patch = next(
+        candidate for candidate in baseline
+        if engine.tone_score(candidate)[0] <= engine.tone_threshold
+        and float(np.sqrt(np.mean(np.asarray(candidate) ** 2))) >= engine.silence_rms
+    )
+
+    for patch in (quiet_patch, carrier_patch, quiet_patch, carrier_patch):
+        engine.process_patch(patch)
     # Events are written on a background thread (see infer.detector._EventWriter)
     # since the hardening round; wait for the queue to drain before reading the
     # DB, or this races and intermittently sees no row yet.
@@ -113,3 +130,42 @@ def test_tonal_channel_event_records_its_frequency(tmp_path):
         ).fetchone()[0]
 
     assert abs(frequency_hz - 4031.25) < 48_000 / 512
+
+
+def test_autoencoder_tolerates_louder_room_after_augmented_training():
+    """Item 2: the AE must not trip just because the room got louder.
+
+    train/run_training.py now trains on data/baseline_patches_augmented.npy,
+    which covers a x0.2-x5.0 gain range (see mock/generate_signals.py) --
+    that range is what stops the autoencoder tripping on a x2-x3 louder room
+    at inference time. Skip (not fail) if the shipped model predates that
+    switch, rather than permanently failing for anyone who hasn't retrained
+    yet; this still fails loudly once retrained if the regression comes back.
+    """
+    manifest_path = Path("models/training_manifest.json")
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        if "augmented" not in str(manifest.get("data_path", "")):
+            pytest.skip(
+                "models/autoencoder.onnx predates the augmented-gain retrain -- run "
+                "train/run_training.py (now defaults to "
+                "data/baseline_patches_augmented.npy), train/calibrate_threshold.py "
+                "and export/export_onnx.py, then rerun this test."
+            )
+
+    engine = AetherHoundEngine()
+    baseline = np.load("data/baseline_patches.npy", mmap_mode="r")[:128]
+    limit = engine.threshold * engine.threat_margin
+
+    false_positives = []
+    for gain in (1.0, 2.0, 3.0):
+        for patch in baseline:
+            scaled = np.asarray(patch, dtype=np.float32) * gain
+            score = engine.score(scaled)
+            if score > limit:
+                false_positives.append((gain, score))
+
+    assert not false_positives, (
+        f"{len(false_positives)} (gain, score) pairs tripped the AE guard at "
+        f"1x-3x gain, trip={limit:.6f}: {false_positives[:5]}..."
+    )

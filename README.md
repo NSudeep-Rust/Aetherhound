@@ -17,12 +17,13 @@ AetherHound/
 ├── dsp/               # Signal processing pipeline
 │   ├── pipeline.py          # Audio: bandpass + notches + STFT (cached SOS)
 │   ├── features.py          # Gain-resistant tonal-prominence feature
+│   ├── keying.py            # On/off keying detector (rejects steady hum/blips)
 │   ├── streaming.py         # Shared live/calibration patch assembly
 │   ├── patch_generator.py   # 64-frame patch slicing
 │   └── rf_pipeline.py       # RF: IQ -> dB spectrum, decimation, peak search
 ├── train/             # Model training & calibration
 │   ├── model.py             # AudioAutoencoder architecture
-│   ├── run_training.py      # Training loop (fixed reference scale)
+│   ├── run_training.py      # Training loop (fixed reference scale, augmented gains, grouped held-out split)
 │   ├── calibrate_threshold.py  # Matching AE + tonal calibration
 │   └── calibrate_room.py    # Separate real-microphone room profile
 ├── export/            # ONNX export
@@ -41,7 +42,10 @@ AetherHound/
 │   ├── test_core.py         # Audio DSP + state machine
 │   ├── test_rf.py           # RF spectrum + waterfall
 │   ├── test_sweep.py        # Sweep step builder tests
+│   ├── test_rf_mofn.py      # RF M-of-N confirmation (bursty/duty-cycled carriers)
 │   ├── test_bearing.py      # Bearing estimation tests
+│   ├── test_keying.py       # On/off keying detector (dsp/keying.py)
+│   ├── test_training_split.py # Group-independent held-out split (needs requirements-train.txt)
 │   └── test_virtual_detection.py # Virtual-source and detection regressions
 ├── mock/              # Synthetic data generator
 │   └── generate_signals.py  # Seeded RNG (deterministic)

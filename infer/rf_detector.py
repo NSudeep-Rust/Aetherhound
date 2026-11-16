@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +28,14 @@ class RFAnomalyDetector:
         self.freqs = baseline["freqs"]
 
         self.state = "CLEAN"
-        self.hot = 0
+        # M-of-N confirmation: ARMED -> THREAT_DETECTED once rf_armed_frames
+        # hits land within the trailing rf_window_frames sweeps, rather than
+        # requiring them consecutively. A duty-cycled/bursty carrier is not
+        # guaranteed to show up on every sweep -- a strict "N in a row" rule
+        # (the old self.hot counter, reset to 0 on any single miss) can leave
+        # it stuck in ARMED forever even though it reliably reappears.
+        window_frames = int(getattr(cfg, "rf_window_frames", cfg.rf_armed_frames))
+        self.hit_window: deque[bool] = deque(maxlen=window_frames)
         self.cold = 0
         # A single long-lived connection, not one per call: sqlite3.connect(
         # ":memory:") opens a brand-new, unshared in-memory database on every
@@ -139,18 +147,18 @@ class RFAnomalyDetector:
         anomalous = peak_z >= self.cfg.z_threshold and bins_over >= self.cfg.min_bins_over
 
         before = self.state
+        self.hit_window.append(anomalous)
         if anomalous:
             self.cold = 0
-            self.hot += 1
             if self.state == "CLEAN":
                 self.state = "ARMED"
-            if self.state == "ARMED" and self.hot >= self.cfg.rf_armed_frames:
+            if self.state == "ARMED" and sum(self.hit_window) >= self.cfg.rf_armed_frames:
                 self.state = "THREAT_DETECTED"
         else:
-            self.hot = 0
             self.cold += 1
             if self.cold >= self.cfg.rf_clear_frames:
                 self.state = "CLEAN"
+                self.hit_window.clear()
 
         if before != self.state:
             self._log(peak_z, peak_hz)

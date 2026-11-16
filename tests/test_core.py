@@ -39,6 +39,7 @@ def test_inference_engine_state_logic():
     
     # 2. Use a real infected test patch that trips either guard
     test_patches = np.load("data/test_patches.npy")
+    baseline_patches = np.load("data/baseline_patches.npy")
     limit = engine.threshold * engine.threat_margin
     # The attack is a brief keyed tone: the AE alone rarely trips on it (that's
     # why the tone guard exists -- see infer/detector.process_patch, which
@@ -55,9 +56,23 @@ def test_inference_engine_state_logic():
             break
     assert fake_malware_patch is not None, "No anomalous test patch found above silence gate"
 
+    # The tone guard now only arms once a tone has toggled on/off a couple of
+    # times (see dsp/keying.py), not on a single patch over the trip, so
+    # hammering the same static patch would no longer escalate if it only
+    # trips the tone guard. Prime a real on/off/on cycle with a quiet
+    # baseline patch in between, matching how the attack fixture actually
+    # alternates, before driving the hysteresis loop below.
+    quiet_patch = next(
+        p for p in baseline_patches
+        if float(np.sqrt(np.mean(p ** 2))) >= engine.silence_rms
+        and engine.tone_score(p)[0] <= engine.tone_threshold
+    ).astype(np.float32)
+    for p in (quiet_patch, fake_malware_patch, quiet_patch):
+        engine.process_patch(p)
+
     # Drive hysteresis: armed_frames consecutive anomalies needed to reach ARMED
     for _ in range(engine.armed_limit + 2):
         score, second_state, _ = engine.process_patch(fake_malware_patch)
-    
+
     assert second_state in ["ARMED", "THREAT_DETECTED"], f"Hysteresis pipeline failed to escalate threat level triggers. State: {second_state}"
     print("\n[+] Verification Unit Tests Passed successfully.")
