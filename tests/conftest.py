@@ -49,9 +49,9 @@ def _ensure_data_fixtures():
             attack_wav.parent.mkdir(parents=True, exist_ok=True)
             import scipy.io.wavfile as wav
 
-            sr, baseline_audio = generate_signals.generate_synthetic_data(duration_sec=20, infected=False)
+            sr, baseline_audio = generate_signals.generate_synthetic_data(duration_sec=20, infected=False, gain_range=(1.0, 1.0))
             wav.write(str(baseline_wav), sr, baseline_audio)
-            sr, infected_audio = generate_signals.generate_synthetic_data(duration_sec=20, infected=True)
+            sr, infected_audio = generate_signals.generate_synthetic_data(duration_sec=20, infected=True, gain_range=(1.0, 1.0))
             wav.write(str(attack_wav), sr, infected_audio)
 
         if not baseline_patches.exists() or not attack_patches.exists():

@@ -164,6 +164,16 @@ The November 2026 project review (`AetherHound Project Review.pdf`) listed sever
 - **GNU Radio flowgraph.** `gnuradio/aetherhound_dsp_demo.grc` is a reference flowgraph mirroring `dsp/pipeline.py`'s band-pass + mains-notch + FFT chain in stock GNU Radio Companion blocks. It's a standalone demo artifact, not part of the live Python path (which stays on scipy -- that's what's actually tested and calibrated). **It hasn't been opened in GNU Radio Companion** (no GUI/network in the environment that authored it) -- see `gnuradio/README.md` before relying on it.
 - **C++ DSP port, benchmarked honestly.** `native/averaged_spectrum.c` is a hand-rolled C (ctypes, no pybind11/cmake) port of `dsp/rf_pipeline.py`'s `averaged_spectrum`. `native/bench_averaged_spectrum.py` compares it against the existing numpy/scipy implementation at the project's real sizes. At the actual RF config (`nfft=2048`, `frames_per_spectrum=4`), **the native port is slower**, matching the review's own profiling finding that FFT work is a minority of sweep time (~33%, vs. ~45% simulator RNG and ~19% a fixed sleep) -- so it's shipped as an opt-in, benchmarked artifact and is not imported anywhere in the live detection path. See `native/README.md`.
 
+## Known Limitations
+
+`dsp/keying.py`'s on/off keying detector tracks only the single strongest spectral peak per patch, which leaves three gaps unaddressed in this build:
+
+- A keyed attack hidden inside realistic noise (e.g. alongside a loud steady fan tone) can be missed, because the detector only ever looks at the single strongest peak per patch -- if the fan tone outranks the keyed tone in a given patch, the keying is invisible to it that patch.
+- A permanently-on, unkeyed carrier is never flagged, since the detector is built to key on/off transitions rather than raise an alert on sustained presence alone.
+- On clean synthetic noise the detector produces roughly 7 false alarms per hour.
+
+The proper fix -- tracking tone presence per frequency bin, counting on/off runs per bin, requiring each run to last at least 2 patches, and optionally learning a per-bin baseline to raise a lower-severity "new steady tone" warning -- has not been implemented in `dsp/keying.py` in this pass.
+
 ## Files
 
 - `models/autoencoder.onnx` - ONNX export for inference (self-contained, no `.data` sidecar)

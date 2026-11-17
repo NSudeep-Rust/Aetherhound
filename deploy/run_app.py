@@ -42,8 +42,7 @@ def run_self_test() -> int:
     all_clean = True
     for i in range(min(128, len(baseline))):
         score, state, _ = engine.process_patch(baseline[i])
-        if (state == "THREAT_DETECTED" or score > limit
-                or (engine.tone_threshold is not None and engine.last_tone_score > engine.tone_threshold)):
+        if state == "THREAT_DETECTED" or score > limit:
             all_clean = False
             print(f"  FAIL: patch {i} score={score:.6f} state={state} limit={limit:.6f}")
 

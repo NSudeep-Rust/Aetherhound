@@ -54,6 +54,7 @@ def main() -> int:
           f"(trip {engine.tone_threshold:.2f} dB, patch duration {patch_dt * 1000:.1f} ms)")
 
     segments = presence_to_segments(flags, patch_dt)
+    segments = [(on and d >= 2 * patch_dt, d) for on, d in segments]
     decoded = decode_timing(segments)
     print(f"[+] Decoded message: {decoded!r}")
     return 0
