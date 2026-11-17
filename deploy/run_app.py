@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -308,6 +309,14 @@ def main() -> int:
     _prev_tone_score = None
     _prev_headless_state = None
     started_at = time.monotonic()
+    # Rolling window of actual loop-iteration start times, used to report a
+    # *measured* fps in the footer instead of just echoing cfg.ui.refresh_hz
+    # back (the review flagged that the footer only ever showed the
+    # configured target, not whether the loop was actually keeping up with
+    # it -- RF sweeps, waterfall rendering, etc. can all make the real rate
+    # fall short of the target).
+    frame_times: deque[float] = deque(maxlen=max(5, cfg.ui.refresh_hz))
+    measured_fps = 0.0
 
     try:
         live_context = (Live(layout, refresh_per_second=cfg.ui.refresh_hz, screen=True, auto_refresh=False)
@@ -315,6 +324,11 @@ def main() -> int:
         with live_context as live:
             while True:
                 t0 = time.perf_counter()
+                frame_times.append(t0)
+                if len(frame_times) >= 2:
+                    elapsed = frame_times[-1] - frame_times[0]
+                    if elapsed > 0:
+                        measured_fps = (len(frame_times) - 1) / elapsed
 
                 # Microphone callbacks produce ~47 blocks/s while the UI redraws
                 # at 30 Hz. Drain all queued callback blocks so the DSP never
@@ -437,9 +451,14 @@ def main() -> int:
                         bearing_est.last_deg, bearing_est.last_conf, cfg.bearing.positions)))
                     layout["bearing"].update(Panel(bt, title="Bearing (RSSI)", border_style="magenta"))
 
-                # Only update footer when info changes (prevents constant refresh)
+                # Only update footer when info changes (prevents constant refresh).
+                # Show measured fps (actual loop cadence over the trailing window)
+                # alongside the configured target -- previously this only ever
+                # echoed cfg.ui.refresh_hz, which looks fine even when the loop
+                # is actually falling behind.
                 footer_text = (
-                    f"{cfg.ui.refresh_hz} fps UI  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
+                    f"{measured_fps:.1f}/{cfg.ui.refresh_hz} fps UI (measured/target)"
+                    f"  |  sweep ~{len(sweep_engine.centers) if sweep_engine else 0} steps"
                     f"  |  {len(cfg.sweep.band_plan)} bands"
                     f"  |  audio drops {getattr(audio, 'queue_drop_count', 0)}"
                     f"  |  callback warnings {getattr(audio, 'callback_status_count', 0)}"

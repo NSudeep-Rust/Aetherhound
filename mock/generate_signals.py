@@ -4,28 +4,52 @@ import scipy.io.wavfile as wav
 
 _RNG = np.random.default_rng(42)
 
-def generate_synthetic_data(duration_sec=10, sample_rate=48000, infected=False, add_silence=False, gain_range=(0.2, 5.0)):
+def generate_synthetic_data(duration_sec=10, sample_rate=48000, infected=False, add_silence=False,
+                            gain_range=(0.2, 5.0), morse_message="SOS", morse_dot_s=0.15):
     t = np.linspace(0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
-    
+
     # 1. Simulate Baseline Server Room Noise (White Noise + 50Hz/60Hz Main Hum)
     white_noise = _RNG.normal(0, 0.005, size=t.shape)
     electrical_hum = 0.002 * np.sin(2 * np.pi * 50 * t) + 0.001 * np.sin(2 * np.pi * 100 * t)
-    
+
     signal = white_noise + electrical_hum
-    
-    # 2. If infected, overlay a covert channel signal (e.g., a pulsing 4000Hz frequency)
+
+    # 2. If infected, overlay a covert channel signal: a 4 kHz tone keyed with
+    # real Morse timing (dsp/morse.py), not just a flat on-every-other-second
+    # toggle. mock/fan_morse.py already does real Morse timing for the
+    # hardware/fan demo; this brings the virtual/simulated attack path (what
+    # the test suite and training actually exercise) into line with it, so
+    # "Morse fan pulse" in the brief is genuinely true end to end: the
+    # generator here encodes `morse_message`, and dsp.morse.decode_timing
+    # (fed from per-patch tone presence, see presence_to_segments) recovers
+    # it back from the detector's observations.
     if infected:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from dsp.morse import encode_timing
+
         pulse_frequency = 4000  # 4 kHz covert channel transmission
         pulse_train = np.zeros_like(t)
-        
-        # Create a simple rhythmic on-off pulse pattern (Morse-code style)
-        # Pulse turns on every alternate second
-        for sec in range(duration_sec):
-            if sec % 2 == 1:
-                start_idx = int(sec * sample_rate)
-                end_idx = int((sec + 0.5) * sample_rate)
-                pulse_train[start_idx:end_idx] = 1.0
-                
+
+        message_segments = encode_timing(morse_message, dot_s=morse_dot_s, lead_in_s=morse_dot_s * 2)
+        # A clearly-longer pause between repeats than the standard 7-unit
+        # inter-word gap, so repeats of the message don't read as one long
+        # run-on word.
+        repeat_gap_s = morse_dot_s * 14
+        if message_segments:
+            cursor = 0.0
+            while cursor < duration_sec:
+                for is_on, duration in message_segments:
+                    if cursor >= duration_sec:
+                        break
+                    start_idx = int(cursor * sample_rate)
+                    end_idx = min(int((cursor + duration) * sample_rate), len(t))
+                    if is_on and end_idx > start_idx:
+                        pulse_train[start_idx:end_idx] = 1.0
+                    cursor += duration
+                cursor += repeat_gap_s
+
         covert_signal = 0.008 * np.sin(2 * np.pi * pulse_frequency * t) * pulse_train
         signal += covert_signal
     
@@ -149,5 +173,18 @@ if __name__ == "__main__":
     wav.write("data/test/infected_attack.wav", sr, infected_audio)
     print("[+] Saved data/test/infected_attack.wav")
     
+    # duration_sec=4 (was the function default of 2) roughly doubles the
+    # underlying normal-hum audio the model trains on, to 200*4s = 800s
+    # (~13.3 min) -- up from ~6.7 min, and a long way up from the ~1 minute
+    # (1,404 patches at the old single-clip 43 ms/patch) the review flagged.
+    # Literal "hours" was considered and rejected: patches scale with total
+    # audio duration regardless of how it's chunked into recordings, and the
+    # augmented set is already ~2.4 GB on disk at the current size, so an
+    # hour (9x more audio) would be tens of GB on disk plus a large, risky
+    # jump in peak RAM while np.stack()-ing the in-memory patch list during
+    # generation (see train/run_training.py). Doubling is a safer, still
+    # honest improvement; bump num_samples and/or duration_sec further here
+    # if your machine has the RAM/disk for it, and update the README's
+    # Section 4 note to match.
     print("[*] Generating augmented training dataset...")
-    generate_training_dataset(num_samples=200)
+    generate_training_dataset(num_samples=200, duration_sec=4)

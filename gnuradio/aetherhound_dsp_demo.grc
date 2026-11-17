@@ -1,0 +1,359 @@
+options:
+  parameters:
+    author: AetherHound
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: "Reference GNU Radio flowgraph for the Project 2 brief's \"DSP with\n\
+      a GNU Radio flowgraph\" requirement. This mirrors dsp/pipeline.py's\n\
+      band-pass + mains-notch + STFT chain using stock GRC blocks instead of\n\
+      scipy: a simulated room (noise + 50 Hz hum) plus a 4 kHz covert tone,\n\
+      filtered and shown as an averaged power spectrum.\n\n\
+      IMPORTANT: this file was authored without access to GNU Radio\n\
+      Companion (no network/display in the authoring sandbox) -- open it in\n\
+      GRC once (gnuradio-companion aetherhound_dsp_demo.grc) and re-save\n\
+      before relying on it. It is a standalone reference/demo, not part of\n\
+      the live Python detection path (that stays on scipy -- see\n\
+      dsp/pipeline.py -- which is what's actually tested and calibrated).\n\n\
+      Requires GNU Radio 3.9/3.10 (apt install gnuradio on Debian/Kali)."
+    copyright: ''
+    description: AetherHound reference DSP flowgraph (noise+hum+covert tone -> bandpass -> notch -> spectrum)
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: aetherhound_dsp_demo
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: AetherHound Reference DSP Flowgraph
+    window_size: (1280, 1024)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: Matches config.toml [audio].rate
+    value: '48000'
+  states:
+    coordinate: [16, 12]
+    rotation: 0
+    state: enabled
+
+- name: nfft
+  id: variable
+  parameters:
+    comment: Matches config.toml [dsp].nfft
+    value: '512'
+  states:
+    coordinate: [136, 12]
+    rotation: 0
+    state: enabled
+
+- name: noise_source
+  id: analog_noise_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.005'
+    comment: Room broadband noise floor (mock/generate_signals.py white_noise, sigma=0.005)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    noise_type: analog.GR_GAUSSIAN
+    seed: '42'
+    type: float
+  states:
+    coordinate: [16, 92]
+    rotation: 0
+    state: enabled
+
+- name: hum_source
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.002'
+    comment: 50 Hz mains hum (mock/generate_signals.py electrical_hum)
+    freq: '50'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    coordinate: [16, 172]
+    rotation: 0
+    state: enabled
+
+- name: add_room
+  id: blocks_add_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'Room signal = noise + hum'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: float
+    vlen: '1'
+  states:
+    coordinate: [216, 132]
+    rotation: 0
+    state: enabled
+
+- name: covert_tone_source
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.008'
+    comment: 4 kHz covert channel carrier (mock/generate_signals.py pulse_frequency);
+      key it on/off externally (e.g. a low-frequency square wave into a
+      Multiply block) to reproduce the Morse-timed attack -- left as a
+      steady tone here to keep this reference flowgraph simple.
+    freq: '4000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    coordinate: [216, 268]
+    rotation: 0
+    state: enabled
+
+- name: add_covert
+  id: blocks_add_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'Composite signal = room + covert tone'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: float
+    vlen: '1'
+  states:
+    coordinate: [392, 172]
+    rotation: 0
+    state: enabled
+
+- name: throttle
+  id: blocks_throttle
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Caps CPU use for a software-only source, same role as real hardware's sample clock
+    ignoretag: 'True'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samples_per_second: samp_rate
+    type: float
+    vlen: '1'
+  states:
+    coordinate: [568, 172]
+    rotation: 0
+    state: enabled
+
+- name: band_pass
+  id: band_pass_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: Matches config.toml [band] lo_hz=20, hi_hz=22000 (dsp/pipeline.py build_filter's bandpass stage)
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: '22000'
+    interp: '1'
+    low_cutoff_freq: '20'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: samp_rate
+    type: fir_filter_fff
+    width: '200'
+    win: window.WIN_HAMMING
+  states:
+    coordinate: [728, 172]
+    rotation: 0
+    state: enabled
+
+- name: mains_notch
+  id: band_reject_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: 50 Hz mains notch, first harmonic only (dsp/pipeline.py build_filter
+      applies notch_harmonics=8 via scipy iirnotch; this reference flowgraph
+      shows one notch for clarity -- chain more band_reject_filter blocks at
+      100/150/... Hz for parity with the Python pipeline)
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: '55'
+    interp: '1'
+    low_cutoff_freq: '45'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: samp_rate
+    type: fir_filter_fff
+    width: '5'
+    win: window.WIN_HAMMING
+  states:
+    coordinate: [920, 172]
+    rotation: 0
+    state: enabled
+
+- name: stream_to_vec
+  id: blocks_stream_to_vector
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_items: nfft
+    type: float
+    vlen: '1'
+  states:
+    coordinate: [1104, 172]
+    rotation: 0
+    state: enabled
+
+- name: fft_vxx_0
+  id: fft_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Matches dsp/pipeline.py spectrogram_from_array's scipy.signal.stft call
+    fft_size: nfft
+    forward: 'True'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    nthreads: '1'
+    shift: 'True'
+    type: float
+    window: window.hann(nfft)
+  states:
+    coordinate: [1104, 268]
+    rotation: 0
+    state: enabled
+
+- name: complex_to_mag_sq
+  id: blocks_complex_to_mag_squared
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: nfft
+  states:
+    coordinate: [1104, 364]
+    rotation: 0
+    state: enabled
+
+- name: to_db
+  id: blocks_nlog10_ff
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 10*log10, matching dsp/rf_pipeline.py's power_spectrum_db dB conversion
+    k: '0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n: '10'
+    vlen: nfft
+  states:
+    coordinate: [1104, 460]
+    rotation: 0
+    state: enabled
+
+- name: spectrum_sink
+  id: qtgui_vector_sink_f
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1'
+    autoscale: 'True'
+    average: '0'
+    color1: '1'
+    comment: ''
+    grid: 'True'
+    gui_hint: ''
+    label1: Averaged spectrum
+    label10: ''
+    label2: ''
+    label3: ''
+    label4: ''
+    label5: ''
+    label6: ''
+    label7: ''
+    label8: ''
+    label9: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    name: '"AetherHound spectrum"'
+    nconnections: '1'
+    ref_level: '0'
+    showports: 'False'
+    update_time: '0.10'
+    vlen: nfft
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    x_axis_label: bin
+    x_start: '0'
+    x_step: '1'
+    x_units: ''
+    y_axis_label: dB
+    y_units: ''
+    ymax: '10'
+    ymin: '-80'
+  states:
+    coordinate: [1104, 556]
+    rotation: 0
+    state: enabled
+
+connections:
+- [noise_source, '0', add_room, '0']
+- [hum_source, '0', add_room, '1']
+- [add_room, '0', add_covert, '0']
+- [covert_tone_source, '0', add_covert, '1']
+- [add_covert, '0', throttle, '0']
+- [throttle, '0', band_pass, '0']
+- [band_pass, '0', mains_notch, '0']
+- [mains_notch, '0', stream_to_vec, '0']
+- [stream_to_vec, '0', fft_vxx_0, '0']
+- [fft_vxx_0, '0', complex_to_mag_sq, '0']
+- [complex_to_mag_sq, '0', to_db, '0']
+- [to_db, '0', spectrum_sink, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2

@@ -8,3 +8,5 @@ models/*.pt
 *.db-wal
 *.db-shm
 docs/*.pdf
+native/*.so
+native/*.o

@@ -1,13 +1,13 @@
 {
   "data_path": "data/baseline_patches_augmented.npy",
   "groups_path": "data/baseline_patches_augmented_groups.npy",
-  "n_patches": 18400,
+  "n_patches": 37200,
   "n_recordings": 200,
   "validation_fraction": 0.2,
   "seed": 2026,
   "split_seed": 7,
   "feature_transform": "log1p_ref_v1",
-  "reference_scale": 0.0018954363642446088,
-  "train_count": 14720,
-  "validation_count": 3680
+  "reference_scale": 0.002074490583213611,
+  "train_count": 29760,
+  "validation_count": 7440
 }
