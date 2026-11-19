@@ -87,7 +87,7 @@ def test_room_profile_overrides_virtual_calibration(tmp_path):
         '{"name":"test room","sample_rate":48000,"nfft":512,'
         '"ae_trip":0.5,"tone_trip_db":9.0,"silence_rms":0.0001}'
     )
-    config_path.write_text(f'[log]\ndb = "{database_path}"\n')
+    config_path.write_text(f'[log]\ndb = "{database_path.as_posix()}"\n')
 
     engine = AetherHoundEngine(config_path, profile=profile_path)
 
@@ -100,7 +100,7 @@ def test_room_profile_overrides_virtual_calibration(tmp_path):
 def test_tonal_channel_event_records_its_frequency(tmp_path):
     config_path = tmp_path / "test_config.toml"
     database_path = tmp_path / "events.db"
-    config_path.write_text(f'[log]\ndb = "{database_path}"\n')
+    config_path.write_text(f'[log]\ndb = "{database_path.as_posix()}"\n')
     engine = AetherHoundEngine(config_path)
     attack = np.load("data/test_patches.npy", mmap_mode="r")
     baseline = np.load("data/baseline_patches.npy", mmap_mode="r")
