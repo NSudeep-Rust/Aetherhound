@@ -25,3 +25,9 @@ Trip 0.01260, attack median 0.00189, attack max 0.00331, trip/median 6.6x
 (control 4.6x). AE alone caught 0/468, false alarms 0/468. Not an improvement:
 clean loud recordings scored high too, so the trip rose faster than attacks.
 Calibration's 181/468 includes the tonal guard (AE OR tone), not AE alone.
+
+## Experiment B: Sigmoid removed from decoder output
+Val loss 0.000376, trip 0.000994, attack median 0.00013, max 0.00071.
+Trip/median 7.5x, trip/max 1.4x (control 1.7x). 61 tests pass.
+Reason: features exceed 1.0 for ~half the training patches, but Sigmoid
+caps outputs at 1.0, so loud clean audio was penalised.
