@@ -40,3 +40,4 @@ nvidia-nccl-cu13==2.30.7
 nvidia-nvjitlink==13.5.37
 nvidia-nvshmem-cu13==3.7.2
 nvidia-nvtx==13.2.86
+onnxscript
